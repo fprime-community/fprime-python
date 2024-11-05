@@ -31,7 +31,7 @@ function(setup_pybind_autocoder TARGET_NAME)
                 BUILD_ROOT="${FPRIME_BUILD_LOCATIONS_SEP}"
                 ${PYTHON} ${BINDING_AUTOCODER_PATH}
                 --ai $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_BINDINGS>
-                --deps $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_DEPS>
+                # --deps $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_DEPS>
         DEPENDS
             ${BINDING_AUTOCODER_PATH}
             $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_BINDINGS>
@@ -70,6 +70,8 @@ function(add_global_target TARGET_NAME)
         COMMAND_EXPAND_LISTS)
 endfunction(add_global_target)
 
+
+
 ####
 # register_python_component:
 #
@@ -80,16 +82,19 @@ function(register_python_component AI_XML PY_IMPL)
     # Get input variables MODULE_NAME and TGT_MOD_DEPS from the mod deps applied to the target
     get_module_name("${CMAKE_CURRENT_LIST_DIR}")
 
-
     # Check that the user supplied items in the right order
-    if (NOT TARGET ${MODULE_NAME})
-        message(FATAL_ERROR "register_python_component must be called after register_fprime_module in CMakeLists.txt")
-    endif()
+    # if (NOT TARGET ${MODULE_NAME})
+    #     message(FATAL_ERROR "1register_python_component must be called after register_fprime_module in CMakeLists.txt")
+    # endif()
     get_target_property(TGT_MOD_DEPS "${MODULE_NAME}" MOD_DEPS)
-    if (NOT TGT_MOD_DEPS)
-        message(FATAL_ERROR "register_python_component must be called after register_fprime_module in CMakeLists.txt")
-    endif()
+    # if (NOT TGT_MOD_DEPS)
+    #     message(FATAL_ERROR "2register_python_component must be called after register_fprime_module in CMakeLists.txt")
+    # endif()
     get_property(TGT_MOD_DEPS TARGET "${MODULE_NAME}" PROPERTY MOD_DEPS)
+    message("RAWR")
+    message("${MODULE_NAME} doing python thingy")
+    message("TGT_MOD_DEPS: ${TGT_MOD_DEPS}")
+
     # Setup cache properties that eill be used later
     set_property(TARGET pybind APPEND PROPERTY PYTHON_BINDINGS ${AI_XML})
     set_property(TARGET pybind APPEND PROPERTY PYTHON_INSTALLS ${PY_IMPL})
@@ -106,19 +111,29 @@ endfunction(register_python_component)
 #
 # Per module target call.  Here we just store properties for use when we generate global bindings.
 ####
-function(add_module_target MODULE_NAME TARGET_NAME GLOBAL_TARGET_NAME AC_INPUTS SOURCE_FILES AC_OUTPUTS MOD_DEPS)
-    foreach (AC_IN IN LISTS AC_INPUTS)
+# "${MODULE}" "${TARGET_NAME}" "${SOURCES}" "${DEPENDENCIES}"
+# changed because setup_single_target - lex-ari
+function(add_module_target MODULE_NAME TARGET_NAME SOURCES MOD_DEPS)
+    foreach (AC_IN IN LISTS SOURCES)
         # Constructing a global list of types in the system
-	if (AC_IN MATCHES ".*(Array)|(Serializable)|(Enum)Ai.xml$" AND NOT MODULE_NAME MATCHES "^Autocoders*")
-            set_property(TARGET ${GLOBAL_TARGET_NAME} APPEND PROPERTY PYTHON_BINDINGS ${AC_IN})
-	        add_dependencies(${GLOBAL_TARGET_NAME} ${MODULE_NAME})
-        # Translate MOD_DEPS to a component property
-        elseif (AC_IN MATCHES ".*ComponentAi.xml$")
-            fprime_ai_info("${AC_IN}" "${MODULE_NAME}")
-            set_property(TARGET ${MODULE_NAME} PROPERTY MOD_DEPS ${MODULE_NAME} ${MOD_DEPS} ${MODULE_DEPENDENCIES})
-        endif()
+	# if (AC_IN MATCHES ".*(Array)|(Serializable)|(Enum)Ai.xml$" AND NOT MODULE_NAME MATCHES "^Autocoders*")
+    #         set_property(TARGET ${TARGET_NAME} APPEND PROPERTY PYTHON_BINDINGS ${AC_IN})
+	#         add_dependencies(${TARGET_NAME} ${MODULE_NAME})
+    #     # Translate MOD_DEPS to a component property
+    #     elseif (AC_IN MATCHES ".*ComponentAi.xml$")
+        fprime_ai_info("${AC_IN}" "${MODULE_NAME}")
+        set_property(TARGET ${MODULE_NAME} PROPERTY MOD_DEPS ${MODULE_NAME} ${MOD_DEPS} ${MOD_DEPS})
+        # endif()
     endforeach()
 endfunction(add_module_target)
 
+function(add_deployment_target TARGET)
+endfunction(add_deployment_target)
 
+function(pybind_add_module_target MODULE TARGET_NAME SOURCES DEPENDENCIES)
+    # add_module_target("${MODULE}" "${TARGET_NAME}" "${SOURCES}" "${DEPENDENCIES}")
+endfunction(pybind_add_module_target)
 
+function(pybind_add_global_target TARGET)
+    add_global_target(pybind)
+endfunction(pybind_add_global_target)
