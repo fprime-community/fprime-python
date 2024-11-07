@@ -28,7 +28,7 @@ function(setup_pybind_autocoder TARGET_NAME)
             ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR}
             ${CMAKE_COMMAND} -E env
                 PYTHONPATH="${FPRIME_FRAMEWORK_PATH}/Autocoders/Python/src"
-                BUILD_ROOT="${FPRIME_BUILD_LOCATIONS_SEP}"
+                BUILD_ROOT="${FPRIME_BUILD_LOCATIONS_SEP}:${CMAKE_BINARY_DIR}/F-Prime"
                 ${PYTHON} ${BINDING_AUTOCODER_PATH}
                 --ai $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_BINDINGS>
                 # --deps $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_DEPS>
@@ -91,9 +91,6 @@ function(register_python_component AI_XML PY_IMPL)
     #     message(FATAL_ERROR "2register_python_component must be called after register_fprime_module in CMakeLists.txt")
     # endif()
     get_property(TGT_MOD_DEPS TARGET "${MODULE_NAME}" PROPERTY MOD_DEPS)
-    message("RAWR")
-    message("${MODULE_NAME} doing python thingy")
-    message("TGT_MOD_DEPS: ${TGT_MOD_DEPS}")
 
     # Setup cache properties that eill be used later
     set_property(TARGET pybind APPEND PROPERTY PYTHON_BINDINGS ${AI_XML})
@@ -122,7 +119,7 @@ function(add_module_target MODULE_NAME TARGET_NAME SOURCES MOD_DEPS)
     #     # Translate MOD_DEPS to a component property
     #     elseif (AC_IN MATCHES ".*ComponentAi.xml$")
         fprime_ai_info("${AC_IN}" "${MODULE_NAME}")
-        set_property(TARGET ${MODULE_NAME} PROPERTY MOD_DEPS ${MODULE_NAME} ${MOD_DEPS} ${MOD_DEPS})
+        set_property(TARGET ${MODULE_NAME} PROPERTY MOD_DEPS ${MODULE_NAME} ${MOD_DEPS})
         # endif()
     endforeach()
 endfunction(add_module_target)
@@ -137,3 +134,6 @@ endfunction(pybind_add_module_target)
 function(pybind_add_global_target TARGET)
     add_global_target(pybind)
 endfunction(pybind_add_global_target)
+
+function(pybind_add_deployment_target TARGET)
+endfunction(pybind_add_deployment_target)

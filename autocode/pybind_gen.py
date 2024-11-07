@@ -244,14 +244,14 @@ def main():
     """ Reads a list of XMLs from file, generates output """
     parser = argparse.ArgumentParser(description='Parse out the python bindings and generate binding outputs')
     parser.add_argument('--ai', nargs='+', help='AI file list of files that might need bindings')
-    parser.add_argument('--deps', nargs='+', help='Dependencies of components explicitly requesting pybind')
+    # parser.add_argument('--deps', nargs='+', help='Dependencies of components explicitly requesting pybind')
     args = parser.parse_args()
 
 
 
     # Setup mechanics for fprime autocoders
     set_build_roots(os.environ["BUILD_ROOT"])
-    searcher = re.compile(r"(Component|Enum|Array|Serializable)Ai\.xml")
+    searcher = re.compile(r"(Component)Ai\.xml")
     # Read out XML list and make them absolute
     paths = set([Path(item).absolute() for item in args.ai])
     namespaces = {}
@@ -265,8 +265,8 @@ def main():
         if not searched:
             continue
         # Filter out items that are not part of a dependency package
-        elif os.path.dirname(relative_path).replace(os.sep, "_").strip("_") not in args.deps:
-            continue
+        # elif os.path.dirname(relative_path).replace(os.sep, "_").strip("_") not in args.deps:
+        #     continue
         try:
             parser_function = PARSE_ROUTE_TABLE[searched.group(1)]
         except Exception as exc:
@@ -324,6 +324,7 @@ def main():
         for item in [item for item in items if item["type"] == "Component"]:
             output = template.render(item=item)
             output_path = item["output_directory"] / f"{ item['name'] }.py.tmpl"
+            print(f"Created Python Template File At {output_path}")
             with open(output_path, "w") as file_handle:
                 file_handle.write(output)
 
