@@ -17,7 +17,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from fprime_ac.utils.buildroot import search_for_file, build_root_relative_path, set_build_roots
 
 env = Environment(
-    loader=PackageLoader(__name__),
+    loader=PackageLoader("pybind_gen"),
     autoescape=select_autoescape()
 )
 STRING_PAIRS = {
