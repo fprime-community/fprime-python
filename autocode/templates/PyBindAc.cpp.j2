@@ -87,13 +87,13 @@ PYBIND11_EMBEDDED_MODULE({{ ns.replace("::", ".") }}, m) {
     py::class_<Fw::Time>(m, "Time");
     {% endif %}
     {% if uses_commands %}
-    py::enum_<Fw::CommandResponse>(m, "CommandResponse")
-        .value("COMMAND_OK", Fw::COMMAND_OK)
-        .value("COMMAND_INVALID_OPCODE", Fw::COMMAND_INVALID_OPCODE)
-        .value("COMMAND_VALIDATION_ERROR", Fw::COMMAND_VALIDATION_ERROR)
-        .value("COMMAND_FORMAT_ERROR", Fw::COMMAND_FORMAT_ERROR)
-        .value("COMMAND_EXECUTION_ERROR", Fw::COMMAND_EXECUTION_ERROR)
-        .value("COMMAND_BUSY", Fw::COMMAND_BUSY)
+    py::enum_<Fw::CmdResponse::T>(m, "CmdResponse")
+        .value("COMMAND_OK", Fw::CmdResponse::OK)
+        .value("COMMAND_INVALID_OPCODE", Fw::CmdResponse::INVALID_OPCODE)
+        .value("COMMAND_VALIDATION_ERROR", Fw::CmdResponse::VALIDATION_ERROR)
+        .value("COMMAND_FORMAT_ERROR", Fw::CmdResponse::FORMAT_ERROR)
+        .value("COMMAND_EXECUTION_ERROR", Fw::CmdResponse::EXECUTION_ERROR)
+        .value("COMMAND_BUSY", Fw::CmdResponse::BUSY)
         .export_values();
     {% endif %}
     {% if uses_queues %}

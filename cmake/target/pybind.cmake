@@ -8,7 +8,7 @@
 # Author: mstarch
 ####
 cmake_policy(SET CMP0079 NEW)
-set(BINDING_AUTOCODER_PATH ${CMAKE_CURRENT_LIST_DIR}/../../autocode/pybind_gen)
+set(BINDING_AUTOCODER_PATH ${CMAKE_CURRENT_LIST_DIR}/../../autocode/pybind_gen.py)
 
 ####
 # setup_pybind_autocoder:
@@ -29,11 +29,11 @@ function(setup_pybind_autocoder TARGET_NAME)
             ${CMAKE_COMMAND} -E env
                 PYTHONPATH="${FPRIME_FRAMEWORK_PATH}/Autocoders/Python/src"
                 BUILD_ROOT="${FPRIME_BUILD_LOCATIONS_SEP}:${CMAKE_BINARY_DIR}/F-Prime"
-                ${PYTHON} ${BINDING_AUTOCODER_PATH}.py
+                ${PYTHON} ${BINDING_AUTOCODER_PATH}
                 --ai $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_BINDINGS>
                 # --deps $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_DEPS>
         DEPENDS
-            ${BINDING_AUTOCODER_PATH}.py
+            ${BINDING_AUTOCODER_PATH}
             $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_BINDINGS>
             $<TARGET_PROPERTY:${TARGET_NAME},PYTHON_DEPS>
         COMMAND_EXPAND_LISTS
