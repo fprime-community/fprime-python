@@ -22,7 +22,7 @@ class {{ item.name }}Base(object):
     {% endif %}
 
     {% if item.commands %}
-    def cmdResponse_out(self, opcode: int, cmd_seq: int, response: Fw.CommandResponse):
+    def cmdResponse_out(self, opcode: int, cmd_seq: int, response: Fw.CmdResponse):
         """ Command response handler """
         self.this.cmdResponse_out(opcode, cmd_seq, response)
     {%- endif %}

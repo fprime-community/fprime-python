@@ -62,12 +62,14 @@ namespace {{ item.ns }} {
     void {{ item.name }} ::{{ in_port.name }}_handler({{ ",".join(in_port.arg_full_texts) }}) {
         py::gil_scoped_acquire acquired{};
         m_self.attr("{{ in_port.name }}_handler")({{ functions.upcast_arguments(in_port.args) }});
+        py::gil_scoped_release released{}
     }
     {% endfor %}
     {% for command in item.commands -%}
     void {{ item.name }} ::{{ command.name }}_cmdHandler({{ ", ".join(command.arg_full_texts) }}) {
         py::gil_scoped_acquire acquired{};
         m_self.attr("{{ command.name }}_cmdHandler")({{ functions.upcast_arguments(command.args) }});
+        py::gil_scoped_release released{};
     }
     {% endfor %}
     {% for parameter in item.parameters %}

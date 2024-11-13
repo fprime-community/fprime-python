@@ -132,7 +132,7 @@ function(pybind_add_module_target MODULE TARGET_NAME SOURCES DEPENDENCIES)
 endfunction(pybind_add_module_target)
 
 function(pybind_add_global_target TARGET)
-    add_global_target(pybind)
+    add_global_target(${TARGET})
 endfunction(pybind_add_global_target)
 
 function(pybind_add_deployment_target TARGET)
