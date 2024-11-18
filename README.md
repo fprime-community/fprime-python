@@ -8,7 +8,8 @@ prototype phase.
 This package allows F´ running as a C++ binary to call into F´ components defined in Python. These components implement
 the functionality of F´ components while maintaining access to the Python environment itself.
 
-fprime-python only supports v2.x.x versions of F´. Further support will be added as necessary to the maintainers.
+This project aims to bring back fucntionality of fprime-python to fprime v3.x.x from the original v2.x.x. As last tested, 
+the latest supported version is v3.5.0. Further work is needed to increase robustness and functionality of fprime-python.
 
 **Acknowledgements:** [`pybind11`](https://github.com/pybind/pybind11) library helps quite a bit! Also thanks to Selina
 Chu, JPL, for the initial suggestion to call embedded Python directly from F´.
@@ -49,7 +50,7 @@ Next, add the path to the download in the `library_locations` list set in settin
 `fprime-python` is checked out parallel to the deployment directory then the following will work:
 
 ```ini
-library_locations: ../fprime-python
+library_locations: ./fprime-python
 ```
 
 Python 3 should be on the user's path and the same Python3 version should be run when executing the program. 
@@ -64,7 +65,7 @@ must be done **after** the call to `register_fprime_module` which registers the 
 ```cmake
 register_fprime_module()
 ...
-register_python_component("${CMAKE_CURRENT_LIST_DIR}/SignalGenComponentAi.xml" "${CMAKE_CURRENT_LIST_DIR}/SignalGen.py")
+register_python_component("${CMAKE_BINARY_DIR}/Components/PythonComponent/PythonComponentComponentAi.xml" "${CMAKE_CURRENT_LIST_DIR}/PythonComponent.py")
 ```
 
 Once finished, the python bindings will be autocoded and included in the next build (assuming the deployment is setup 
@@ -94,12 +95,11 @@ and support code.  Take a note, the call to `register_fprime_target` must occur 
 and before the `FPrime-Code.cmake` include call.
 
 ```cmake
-include("${FPRIME_FRAMEWORK_PATH}/cmake/FPrime.cmake")
+include("${FPRIME_FRAMEWORK_PATH}/fprime/cmake/FPrime.cmake")
 register_fprime_target("<path to fprime-python>/cmake/target/pybind.cmake")
 
 # NOTE: register custom targets between these two lines
-include("${FPRIME_FRAMEWORK_PATH}/cmake/FPrime-Code.cmake")
-include("<path to fprime-python>/fprime-python.cmake")
+fprime_setup_included_code()
 ...
 ...
 ```
@@ -110,7 +110,8 @@ In addition, the user should add the following code to their `Main.cpp` file bef
 #include <fprime-python/FprimePy/FprimePy.hpp>
 
 int main(int argc, char* argv[]) {
-    FprimePy::initialize();
+    FprimePy::FprimePython fprimePython = FprimePy::FprimePython();
+    fprimePython.initialize();
 }
 ```
 
