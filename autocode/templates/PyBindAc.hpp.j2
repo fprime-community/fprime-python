@@ -45,7 +45,12 @@ namespace {{ item.ns }} {
         {% endif %}
         // Changing access modifiers for command response
         {% if item.commands %}
-        using {{ item.name }}ComponentBase::cmdResponse_out;
+        // using {{ item.name }}ComponentBase::cmdResponse_out;
+        void cmdResponse_out(FwOpcodeType opCode, U32 cmdSeq, Fw::CmdResponse::T response)
+        {
+          Fw::CmdResponse convertResponse(response);
+          {{ item.name }}ComponentBase::cmdResponse_out(opCode, cmdSeq, convertResponse);
+        }
         {%- endif %}
         {% if item.commands or items.channels or items.events or item.parameters %}
         using {{ item.name }}ComponentBase::getTime;
@@ -60,7 +65,12 @@ namespace {{ item.ns }} {
         {% endfor %}
         // Changing access modifiers for output calls to events
         {% for event in item.events -%}
-        using {{ item.name }}ComponentBase::log_{{ event.severity }}_{{ event.name }};
+        // using {{ item.name }}ComponentBase::log_{{ event.severity }}_{{ event.name }};
+        void log_{{ event.severity }}_{{ event.name }}(const Fw::LogStringArg greeting)
+        {
+          Fw::LogStringArg message(greeting);
+          {{ item.name }}ComponentBase::log_{{ event.severity }}_{{ event.name }}(message);
+        } 
         {% endfor %}
         // Changing access modifiers for parameter calls
         {% for param in item.parameters %}
