@@ -27,6 +27,6 @@ class {{ item.name }}(fprime_pybind.{{ item.name }}Base):
     {% for command in item.commands -%}
     def {{ command.name }}_cmdHandler(self, {{ ", ".join(command.arg_names) }}):
         """ Command handler for {{ command.name }} """
-        self.cmdResponse_out(opCode, cmdSeq, Fw.CommandResponse.COMMAND_OK) # TODO: implement {{ command.name }}
+        self.cmdResponse_out(opCode, cmdSeq, Fw.CmdResponse.COMMAND_OK) # TODO: implement {{ command.name }}
 
     {% endfor %}

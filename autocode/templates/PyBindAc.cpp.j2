@@ -83,7 +83,7 @@ namespace {{ item.ns }} {
 {% endif %}
 {% endfor %}
 
-PYBIND11_EMBEDDED_MODULE({{ ns.replace("::", ".") }}, m) {
+PYBIND11_MODULE({{ ns.replace("::", ".") }}, m) {
 {% if ns == "Fw"%}
     {% if uses_time %}
     py::class_<Fw::Time>(m, "Time");
