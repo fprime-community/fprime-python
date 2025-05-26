@@ -116,7 +116,6 @@ PYBIND11_MODULE({{ ns.replace("::", ".") }}, m) {
     {% endif %}
 {% endif %}
 
-
 {% for item in types -%}
     {% set cpp_class_name = item.ns + "::" + item.name -%}
     {% if item.type == "Enum" %}
@@ -152,6 +151,7 @@ PYBIND11_MODULE({{ ns.replace("::", ".") }}, m) {
             .def("set{{ name }}", &{{ cpp_class_name }}::set{{ name }})
             .def("get{{ name }}", &{{ cpp_class_name }}::get{{ name }})
         {%- endfor -%};
+    
     {% elif item.type == "Component" %}
     py::class_<{{ cpp_class_name }}>(m, "{{ item.name }}")
         {%- if item.kind == "queued" -%}
@@ -175,8 +175,14 @@ PYBIND11_MODULE({{ ns.replace("::", ".") }}, m) {
         {% for param in item.parameters %}
         .def("paramGet_{{ param.name }}", &{{ item.ns }}::{{ item.name }}::paramGet_{{ param.name }}_helper)
         {%- endfor -%};
+    
     {% elif item.type == "string" %}
+    {% if item.name == "LogStringArg" %}
+    py::class_<Fw::StringBase, std::unique_ptr<Fw::StringBase, py::nodelete>>(m, "StringBase");
+    py::class_<{{ cpp_class_name }} , {{ "Fw::StringBase"}}>(m, "{{ item.name }}")
+    {%- else -%}
     py::class_<{{ cpp_class_name }}>(m, "{{ item.name }}")
+    {% endif %}
         .def(py::init<char *>())
         .def("toChar", &{{ item.ns }}::{{ item.name }}::toChar);
     {% endif %}

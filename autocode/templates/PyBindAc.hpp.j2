@@ -65,12 +65,7 @@ namespace {{ item.ns }} {
         {% endfor %}
         // Changing access modifiers for output calls to events
         {% for event in item.events -%}
-        // using {{ item.name }}ComponentBase::log_{{ event.severity }}_{{ event.name }};
-        void log_{{ event.severity }}_{{ event.name }}(const Fw::LogStringArg greeting)
-        {
-          Fw::LogStringArg message(greeting);
-          {{ item.name }}ComponentBase::log_{{ event.severity }}_{{ event.name }}(message);
-        } 
+        using {{ item.name }}ComponentBase::log_{{ event.severity }}_{{ event.name }};
         {% endfor %}
         // Changing access modifiers for parameter calls
         {% for param in item.parameters %}
