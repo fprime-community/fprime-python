@@ -48,7 +48,7 @@ namespace {{ item.ns }} {
     {{ item.name }} ::{{ item.name }}(const char* name) : {{ item.name }}ComponentBase(name) {}
 
     // init function loads python code
-    void {{ item.name }} ::init({%- if item.kind != "passive" -%}const NATIVE_INT_TYPE queueDepth, {%- endif -%}const NATIVE_INT_TYPE instance) {
+    void {{ item.name }} ::init({%- if item.kind != "passive" -%}const FwIndexType queueDepth, {%- endif -%}const FwIndexType instance) {
         py::gil_scoped_acquire acquired{};
         py::module_ module = py::module_::import("{{ item.name }}");
         this->m_self = module.attr("{{ item.name }}")();

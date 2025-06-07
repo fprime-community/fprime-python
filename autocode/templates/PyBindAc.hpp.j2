@@ -24,7 +24,7 @@ namespace {{ item.ns }} {
         {{ item.name }}(const char* name);
 
         // init function loads python code
-        void init({%- if item.kind != "passive" -%}const NATIVE_INT_TYPE queueDepth, {%- endif -%}const NATIVE_INT_TYPE instance);
+        void init({%- if item.kind != "passive" -%}const FwIndexType queueDepth, {%- endif -%}const FwIndexType instance);
 
         ~{{ item.name }}();
 
