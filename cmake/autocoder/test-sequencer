@@ -1,0 +1,3 @@
+#!/bin/bash
+python -m fprime_python "$@" --prefixes ../../../../build-fprime-automatic-native/ ../../../../ ../../../../lib/fprime -- ../../../../build-fprime-automatic-native/F-Prime/Svc/FpySequencer
+#python -m fprime_python ../../../../build-fprime-automatic-native/FprimePythonReference/Components/ActivePythonExample
