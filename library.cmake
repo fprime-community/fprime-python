@@ -1,2 +1,2 @@
-add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/fprime-python/FprimePy")
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/FprimePy")
 

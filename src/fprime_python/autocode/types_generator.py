@@ -13,7 +13,6 @@ from fprime_python_model.semantics.types_values import Type, StructType, EnumTyp
 from .binding_generator import FppPybindBindingGenerator, In, STANDARD_INDENT
 
 
-
 ARRAY_TEMPLATE = """
 pybind11::class_<{fqn}>(m, "{unqualified_class_name}")
 .def(pybind11::init<>())
@@ -53,33 +52,33 @@ class ArrayPybindCppGenerator(FppPybindBindingGenerator):
     
     Example:
     ```python
-    ArrayPybindCppGenerator().get_lines(array_type, model)
+    ArrayPybindCppGenerator().get_type_lines(array_type, model)
     ```
 
     Example Output:
     ```cpp
-    void init_MyNamespace_MyArray(pybind11::module_& m) {
+    void init_FprimePythonReference_PythonArray(pybind11::module_& m) {
         
-        pybind11::class_<MyNamespace::MyArray>(m, "PythonArray")
+        pybind11::class_<FprimePythonReference::PythonArray>(m, "PythonArray")
         .def(pybind11::init<>())
-        .def("__getitem__", [](const MyNamespace::MyArray &a, int index) {
-            if (index >= MyNamespace::MyArray::SIZE) {
+        .def("__getitem__", [](const FprimePythonReference::PythonArray &a, int index) {
+            if (index >= FprimePythonReference::PythonArray::SIZE) {
                 throw std::out_of_range("array index out of bounds");
             }
             return a[index];
         }, pybind11::is_operator())
         .def("__setitem__",
-            [](MyNamespace::MyArray &a, int index, const MyNamespace::MyArray::ElementType &value) {
-            if (index >= MyNamespace::MyArray::SIZE) {
+            [](FprimePythonReference::PythonArray &a, int index, const FprimePythonReference::PythonArray::ElementType &value) {
+            if (index >= FprimePythonReference::PythonArray::SIZE) {
                 throw std::out_of_range("array index out of bounds");
             }
             a[index] = value;
         }, pybind11::is_operator())
         .def_property_readonly_static("size", [](pybind11::object /* self */) {
-            return MyNamespace::MyArray::SIZE;
+            return FprimePythonReference::PythonArray::SIZE;
         })
         .def_property_readonly_static("SIZE", [](pybind11::object /* self */) {
-            return MyNamespace::MyArray::SIZE;
+            return FprimePythonReference::PythonArray::SIZE;
         });
     }
     """
@@ -113,7 +112,7 @@ pybind11::native_enum<{fqn}::T>(enumeration, "T", "enum.Enum")
 {STANDARD_INDENT}.export_values()
 {STANDARD_INDENT}.finalize();
 
-{STANDARD_INDENT}enumeration.def(pybind11::init<{fqn}::T>());
+enumeration.def(pybind11::init<{fqn}::T>());
 """
 
 FPP_ENUM_ENTRY_TEMPLATE = """.value("{enumeration}", {fqn}::{enumeration})"""
@@ -131,19 +130,25 @@ class EnumPybindCppGenerator(FppPybindBindingGenerator):
 
     Example:
     ```python
-    EnumPybindCppGenerator().get_cpp_lines(enum_type, model)
+    EnumPybindCppGenerator().get_type_lines(enum_type, model)
     ```
 
     Example Output:
     ```cpp
-    void init_MyNamespace_MyEnum(pybind11::module_& m) {
-        pybind11::class_<MyNamespace::MyEnum> enumeration(m, "MyEnum");
-        enumeration.def_readwrite("e", &MyNamespace::MyEnum::e);
-
-        pybind11::native_enum<MyNamespace::MyEnum::T>(enumeration, "MyEnum", "enum.Enum")
-            .value("VAL1", MyNamespace::MyEnum::VAL1)
-            .value("VAL2", MyNamespace::MyEnum::VAL2)
+    void init_FprimePythonReference_PythonEnumeration(pybind11::module_& m) {
+        
+        pybind11::class_<FprimePythonReference::PythonEnumeration> enumeration(m, "PythonEnumeration");
+            enumeration.def_readwrite("e", &FprimePythonReference::PythonEnumeration::e);
+        
+        pybind11::native_enum<FprimePythonReference::PythonEnumeration::T>(enumeration, "T", "enum.Enum")
+            .value("ENUMERATION_A", FprimePythonReference::PythonEnumeration::ENUMERATION_A)
+            .value("ENUMERATION_B", FprimePythonReference::PythonEnumeration::ENUMERATION_B)
+            .value("ENUMERATION_C", FprimePythonReference::PythonEnumeration::ENUMERATION_C)
+            .export_values()
             .finalize();
+        
+        enumeration.def(pybind11::init<FprimePythonReference::PythonEnumeration::T>());
+    }
     """
 
     def get_type_lines(self, enum_type: EnumType, in_: In) -> List[str]:
@@ -216,15 +221,40 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
 
     Example Output:
     ```cpp
-    void init_MyNamespace_MyStruct(pybind11::module_& m) {
-        pybind11::class_<MyNamespace::MyStruct>(m, "MyStruct")
+    void init_FprimePythonReference_PythonComplexStruct(pybind11::module_& m) {
+        
+        pybind11::class_<FprimePythonReference::PythonComplexStruct>(m, "PythonComplexStruct")
             .def(pybind11::init<>())
-            .def_property("member1", static_cast<some type>(&MyNamespace::MyStruct::get_member1),
-                                     &MyNamespace::MyStruct::set_member1
-                         )
-            .def("get_member1", static_cast<some type>(&MyNamespace::MyStruct::get_member1))
-            .def("set_member1", &MyNamespace::MyStruct::set_member1);
-
+            
+            .def_property("x", static_cast<U32 (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_x),
+                                    &FprimePythonReference::PythonComplexStruct::set_x
+                        )
+            .def("get_x", static_cast<U32 (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_x))
+            .def("set_x", &FprimePythonReference::PythonComplexStruct::set_x)
+            
+            .def_property("y", static_cast<Fw::ExternalString& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_y),
+                                    &FprimePythonReference::PythonComplexStruct::set_y
+                        )
+            .def("get_y", static_cast<Fw::ExternalString& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_y))
+            .def("set_y", &FprimePythonReference::PythonComplexStruct::set_y)
+            
+            .def_property("u", static_cast<FprimePythonReference::PythonSimpleStruct& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_u),
+                                    &FprimePythonReference::PythonComplexStruct::set_u
+                        )
+            .def("get_u", static_cast<FprimePythonReference::PythonSimpleStruct& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_u))
+            .def("set_u", &FprimePythonReference::PythonComplexStruct::set_u)
+            
+            .def_property("w", static_cast<FprimePythonReference::PythonArray& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_w),
+                                    &FprimePythonReference::PythonComplexStruct::set_w
+                        )
+            .def("get_w", static_cast<FprimePythonReference::PythonArray& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_w))
+            .def("set_w", &FprimePythonReference::PythonComplexStruct::set_w)
+            
+            .def_property("z", static_cast<FprimePythonReference::PythonEnumeration::T (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_z),
+                                    &FprimePythonReference::PythonComplexStruct::set_z
+                        )
+            .def("get_z", static_cast<FprimePythonReference::PythonEnumeration::T (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_z))
+            .def("set_z", &FprimePythonReference::PythonComplexStruct::set_z);
     }
     """
 
@@ -324,28 +354,3 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
                                                   fqn=fqn,
                                                   reference_qualifier=reference_qualifier,
                                                   const_qualifier="const" if reference_qualifier != "&" else "")
-
-    def get_setter_cast(self, name, fqn: str, field: Type, in_: In) -> str:
-        """ Get static cast for a setter method
-        
-        TODO: this does not seem to be required as there is no non-const setter method. This may have been mistakenly
-            written in parallel with the getter method.
-
-            
-        Warning: this function does not support inlined arrays as struct members because python does not support 
-            fixed-sized basic array types. Passing these in will result in a non-array type.
-            
-        Args:
-            name: name of the field (member) for the setter
-            fqn: fully qualified name of the struct containing the field
-            field: the type of the field for the member
-            in_: input support tuple
-        Returns:
-            The static cast string for the setter method
-        """
-        field_type, reference_qualifier = self.get_field_info(name, field, parent, in_)
-        field_type = field_type.replace("Fw::ExternalString", "Fw::StringBase")
-        return SETTER_STATIC_CAST_TEMPLATE.format(field_type=field_type,
-                                                  fqn=fqn,
-                                                  reference_qualifier=reference_qualifier,
-                                                  const_qualifier="const" if reference_qualifier == "&" else "")

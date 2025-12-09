@@ -252,18 +252,17 @@ class FppPybindBindingGenerator(CodeGenerator):
             class_definition=f"\n{STANDARD_INDENT}".join(class_definition_lines)
         ).splitlines()
 
-    def get_init_function_invocation(self, type_object: Type, in_: In) -> Tuple[str, str]:
+    def get_init_function_invocation(self, type_object: Type, in_: In) -> List[str]:
         """ Generate pair of containing module and invocation line for this type
         
-        Returns the invocation statement lines for the initialization function for this type.
-
-        TODO: fix the return type
+        Returns the invocation statement lines for the initialization function for this type. These are expressed as 
+        a JSON serialized dictionary mapping the fully qualified namespace to the invocation lines.
 
         Args:
             type_object: The type object from the analysis' type map to generate lines for
             in_: input support tuple
         Returns:
-            A tuple of the containing module and a list of strings representing the lines of C++ code
+            JSON serialized lines of a dictionary of namespace fqn to init function lines of C++ code
         """
         fully_qualified_class_name = self.get_fully_qualified_cpp_name(type_object, in_)
         fqn_with_underscores = str(fully_qualified_class_name).replace("::", "_")
@@ -275,7 +274,7 @@ class FppPybindBindingGenerator(CodeGenerator):
 
     def get_hpp_includes(self, _: Type, __: In) -> List[str]:
         """ Get any includes required by the HPP file """
-        return ["#include \"fprime-python/fprime-python.hpp\""]
+        return ["#include \"FprimePython/FprimePython.hpp\""]
     
     def get_cpp_includes(self, type_object: Type, _: In) -> List[str]:
         """ Get any includes required by the CPP file """

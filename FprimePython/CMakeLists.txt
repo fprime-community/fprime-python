@@ -1,8 +1,11 @@
 # Setup the pybind11 library so that we may use it
 
 register_fprime_library(
+        FprimePython
     SOURCES
         "${CMAKE_CURRENT_LIST_DIR}/FprimePy.cpp"
+    HEADERS
+
     DEPENDS
         Fw_Types
 )

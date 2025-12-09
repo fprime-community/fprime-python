@@ -1,7 +1,9 @@
 
 """fprime-python:
 
-An autocoder that is used to generate Python bindings for F´ components.
+An autocoder that is used to generate Python bindings for F Prime components. This module provides two functions:
+ - bindings: Generate Python bindings for F Prime types and components that have the @fprime-python annotation
+ - initialization: Generate the pybind11 module initialization code that ties together the generated bindings
 """
 from __future__ import annotations
 
