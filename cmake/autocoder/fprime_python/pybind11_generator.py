@@ -7,22 +7,33 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
+DEPLOYMENT_BINDING_FUNCTION_NAME = "setup_user_deployment"
+
 STANDARD_INDENTATION = " " * 4
 
 INITIALIZATION_FUNCTION_TEMPLATE = """
 {header_include_block}
+#include "fprime-python/FprimePy/FprimePy.hpp"
+#include "DeploymentBindings.hpp"
 
 PYBIND11_MODULE(fprime_python, fprime_) {{
 {STANDARD_INDENTATION}fprime_.doc() = "F´ Python Bindings Module";
-{STANDARD_INDENTATION}{modules_block}
+{STANDARD_INDENTATION}{modules_definition_block}
+{STANDARD_INDENTATION}Fw::bind_fprime_types(fprime_Fw);
+{STANDARD_INDENTATION}{modules_binding_block}
+{STANDARD_INDENTATION}{deployment_binding_function_name}(fprime_);
 }}
-"""
+""".strip()
+
+TOPOLOGY_FUNCTION_TEMPLATE = """
+fprime_{deployment_name_with_underscores}.def("{function_name}", &{deployment_name}::{function_name});
+""".strip()
 
 INCLUDE_TEMPLATE = '#include "{header_path}"'
 
 MODULE_TEMPLATE = """
 {STANDARD_INDENTATION}auto fprime_{fqn_with_underscores} = fprime_{parent_fqn_with_underscores}.def_submodule("{unqualified_name}", "TODO: add doc strings");
-"""
+""".strip()
 
 def read_and_merge(files: List[Path]) -> Dict[str, List[str]]:
     """ Read and merge multiple JSON dictionaries into one """
@@ -58,12 +69,12 @@ def get_module_lines(files: List[Path], headers: List[Path]) -> List[str]:
             STANDARD_INDENTATION=STANDARD_INDENTATION
         )
         for module in modules if module != ""
-
-
-        
-    ] + [ line.replace("(m)", "(fprime_" + module.replace(".", "_") + ")") for module in merged_invocations.keys() for line in merged_invocations[module] ]
+    ]
+    module_binding_lines = [ line for module in merged_invocations.keys() for line in merged_invocations[module] ]
     return INITIALIZATION_FUNCTION_TEMPLATE.format(
         header_include_block=header_block,
-        modules_block=f"\n{STANDARD_INDENTATION}".join(module_definitions),
-        STANDARD_INDENTATION=STANDARD_INDENTATION
+        modules_definition_block=f"\n{STANDARD_INDENTATION}".join(module_definitions),
+        modules_binding_block=f"\n{STANDARD_INDENTATION}".join(module_binding_lines),
+        STANDARD_INDENTATION=STANDARD_INDENTATION,
+        deployment_binding_function_name=DEPLOYMENT_BINDING_FUNCTION_NAME
     ).splitlines()

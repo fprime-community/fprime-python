@@ -21,7 +21,7 @@ from fprime_python_model.semantics.analysis import Analysis
 from .generator import CppPythonBaseGenerator
 from .include import IncludeManager
 from .types_generator import ArrayPybindCppGenerator, EnumPybindCppGenerator, StructPybindCppGenerator
-from .component_generator import FprimePythonComponentGenerator
+from .component_generator import ComponentImplementationGenerator, ComponentPybindGenerator
 
 In: TypeAlias = Tuple[Analysis, IncludeManager]
 Out: TypeAlias = Dict[Path, List[str]]
@@ -79,14 +79,25 @@ class AnnotatedComponentVisitor(AstVisitor):
             return {}
         analysis, include_manager = _in
         type_info = analysis.component_map[node._id]
-        line_generator = FprimePythonComponentGenerator(include_manager)
-        cpp_lines = line_generator.get_cpp_lines(type_info, _in)
-        hpp_lines = line_generator.get_hpp_lines(type_info, _in)
-        invocations = line_generator.get_init_function_invocation(type_info, _in)
+        bind_generator = ComponentPybindGenerator(include_manager)
+        instance_generator = ComponentImplementationGenerator(include_manager)
+        cpp_binding_lines = bind_generator.get_cpp_lines(type_info, _in)
+        hpp_binding_lines = bind_generator.get_hpp_lines(type_info, _in)
+        # This is to extend the #ifndef block around the class HPP lines
+        cpp_component_lines = instance_generator.get_cpp_lines(type_info, _in) 
+        hpp_component_lines = instance_generator.get_hpp_lines(type_info, _in)
+
+        python_lines = instance_generator.get_python_base_lines(type_info, _in)
+        python_implementation_lines = instance_generator.get_python_implementation_lines(type_info, _in)
+        invocations = bind_generator.get_init_function_invocation(type_info, _in)
         return {
-            self.output_path / f"{node.data.name}BindingAc.cpp": cpp_lines,
-            self.output_path / f"{node.data.name}BindingAc.hpp": hpp_lines,
+            self.output_path / f"{node.data.name}BindingAc.cpp": cpp_binding_lines,
+            self.output_path / f"{node.data.name}BindingAc.hpp": hpp_binding_lines,
+            self.output_path / f"{node.data.name}.cpp": cpp_component_lines,
+            self.output_path / f"{node.data.name}.hpp": hpp_component_lines,
             self.output_path / f"{node.data.name}Binding.json": invocations,
+            self.output_path / f"{node.data.name}BaseAc.py": python_lines,
+            self.output_path / f"{node.data.name}.template.py": python_implementation_lines
         }
 
         return {}

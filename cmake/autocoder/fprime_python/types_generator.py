@@ -108,9 +108,12 @@ FPP_ENUM_TEMPLATE = """
 pybind11::class_<{fqn}> enumeration(m, "{unqualified_class_name}");
 {STANDARD_INDENT}enumeration.def_readwrite("e", &{fqn}::e);
 
-pybind11::native_enum<{fqn}::T>(enumeration, "{unqualified_class_name}", "enum.Enum")
+pybind11::native_enum<{fqn}::T>(enumeration, "T", "enum.Enum")
 {STANDARD_INDENT}{values}
+{STANDARD_INDENT}.export_values()
 {STANDARD_INDENT}.finalize();
+
+{STANDARD_INDENT}enumeration.def(pybind11::init<{fqn}::T>());
 """
 
 FPP_ENUM_ENTRY_TEMPLATE = """.value("{enumeration}", {fqn}::{enumeration})"""

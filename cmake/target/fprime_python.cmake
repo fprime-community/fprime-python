@@ -30,8 +30,23 @@ function(fprime_python_add_module_target MODULE TARGET SOURCE_FILES DEPENDENCIES
     if (AUTOCODER_GENERATED_BUILD_SOURCES)
         add_library("${MODULE}_fprime_python" STATIC ${AUTOCODER_GENERATED_BUILD_SOURCES})
         target_link_libraries("${MODULE}_fprime_python" PUBLIC ${AUTOCODER_DEPENDENCIES} ${MODULE} Fw_Types)
-        #add_dependencies("fprime_python" "${MODULE}_fprime_python")
+
+        # Copies any generated python template files back to the source directory for users to rename-and-edit. This
+        # is designed to not require a separate "impl" step and ensures the latest templates are always up-to-date.
+        set(PYTHON_TEMPLATE_SOURCES ${AUTOCODER_GENERATED_OTHER})
+        list(FILTER PYTHON_TEMPLATE_SOURCES INCLUDE REGEX "^.*\\.template\\.py$")
+        if (PYTHON_TEMPLATE_SOURCES)
+            add_custom_command(TARGET "${MODULE}" POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PYTHON_TEMPLATE_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}
+                COMMENT "Copying Python template files to source directory"
+            )
+        endif()
     endif()
+    # Install python files into the 'python' folder of the installation tree
+    set(PYTHON_SOURCES ${AUTOCODER_GENERATED_OTHER} ${SOURCE_FILES})
+    list(FILTER PYTHON_SOURCES INCLUDE REGEX "^.*\\.py$")
+    list(FILTER PYTHON_SOURCES EXCLUDE REGEX "^.*\\.template\\.py$")
+    set_target_properties(${MODULE} PROPERTIES FPRIME_PYTHON_SOURCES "${PYTHON_SOURCES}")
 endfunction(fprime_python_add_module_target)
 
 
@@ -42,12 +57,26 @@ endfunction(fprime_python_add_module_target)
 #
 ####
 function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES FULL_DEPENDENCIES)
+    fprime_python_add_module_target("${MODULE}" "${TARGET}" "${SOURCES}" "${DEPENDENCIES}")
      run_ac_set("${MODULE}" "autocoder/fprime_python") # Run the fprime_python autocoder on this module
-    _fprime_python_generate_init_file("${FULL_DEPENDENCIES}")
+    _fprime_python_generate_init_file("${MODULE}" "${FULL_DEPENDENCIES}")
     set_property(SOURCE ${FPRIME_PYTHON_DEPLOYMENT_INIT_FILE} PROPERTY GENERATED TRUE)
     pybind11_add_module("fprime_python" ${FPRIME_PYTHON_DEPLOYMENT_INIT_FILE})
     list(REMOVE_ITEM FULL_DEPENDENCIES "${MODULE}")
-    target_link_libraries("fprime_python" PUBLIC ${FPRIME_PYTHON_DEPLOYMENT_MODULES} ${FULL_DEPENDENCIES} Fw_Types)
+    target_link_libraries("fprime_python" PUBLIC ${FPRIME_PYTHON_DEPLOYMENT_MODULES} ${FULL_DEPENDENCIES} Fw_Types fprime-python_FprimePy)
+    install(TARGETS "fprime_python"
+            LIBRARY DESTINATION "python"
+            COMPONENT "fprime-python"
+    )
+
+    foreach(DEPENDENCY IN LISTS FULL_DEPENDENCIES MODULE)
+        get_target_property(PY_SOURCES ${DEPENDENCY} FPRIME_PYTHON_SOURCES)
+        if (PY_SOURCES)
+            install(FILES ${PY_SOURCES} DESTINATION "python" COMPONENT "fprime-python")
+        endif()
+    endforeach()
+    add_custom_command(TARGET "fprime_python" POST_BUILD COMMAND "${CMAKE_COMMAND}"
+            -DCMAKE_INSTALL_COMPONENT=fprime-python -P ${CMAKE_BINARY_DIR}/cmake_install.cmake)
     #add_dependencies("fprime_python" "${MODULE}_fprime_python")
 endfunction()
 
@@ -56,7 +85,7 @@ endfunction()
 #
 # Generates the pybind11 file that contains all the initialization code for the fprime_python deployment.
 #####
-function(_fprime_python_generate_init_file FULL_DEPENDENCIES)
+function(_fprime_python_generate_init_file MODULE FULL_DEPENDENCIES)
     foreach(DEPENDENCY IN LISTS FULL_DEPENDENCIES)
         if (TARGET "${DEPENDENCY}_fprime_python")
             get_target_property(MODULE_JSON_FILES "${DEPENDENCY}" FPRIME_PYTHON_GENERATED_JSON_FILES)
@@ -66,7 +95,6 @@ function(_fprime_python_generate_init_file FULL_DEPENDENCIES)
             list(APPEND ALL_MODULES "${DEPENDENCY}_fprime_python")
         endif()
     endforeach()
-    # Generate the init file
     set(ENV{PYTHONPATH} "${FPRIME_PYTHON_PYTHON_PATH}")
     execute_process(
         COMMAND "${PYTHON}" -m "fprime_python" "initialization" "--dry-run" "--output-directory" "${CMAKE_CURRENT_BINARY_DIR}" --header-files ${ALL_HPP_FILES} "--json-files" ${ALL_JSON_FILES}
