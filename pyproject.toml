@@ -41,7 +41,7 @@ Repository = "https://github.com/fprime-community/fprime-python.git"
 
 
 [project.scripts]
-fprime-python-ac = "fprime_python.autocoder:main"
+fprime-python-ac = "fprime_python.autocode.__main__:main"
 fprime-python-runner = "fprime_python.runner:main"
 
 ####

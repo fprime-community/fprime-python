@@ -1,36 +1,36 @@
 """ fprime_python.pybind11_generator.py:
 
-File used to generate the pybind11 C++ code for F´.
+File used to generate the pybind11 C++ code for F Prime. This includes the top-level module initialization code, the
+definition of submodules, and the binding invocations for all types. This is generated from the JSON files output by
+the various type binding generators.
 """
-import itertools
 import json
 from pathlib import Path
 from typing import Dict, List
+from .binding_generator import STANDARD_INDENT as STANDARD_INDENTATION
 
+# User defined function name for deployment binding
 DEPLOYMENT_BINDING_FUNCTION_NAME = "setup_user_deployment"
 
-STANDARD_INDENTATION = " " * 4
-
+# Initialization function template for pybind11 module. This includes header files, module definitions,
+# and binding calls.
 INITIALIZATION_FUNCTION_TEMPLATE = """
 {header_include_block}
-#include "fprime-python/FprimePy/FprimePy.hpp"
-#include "DeploymentBindings.hpp"
+#include "FprimePython/FprimePython.hpp"
 
-PYBIND11_MODULE(fprime_python, fprime_) {{
+PYBIND11_MODULE(fprime_py, fprime_) {{
 {STANDARD_INDENTATION}fprime_.doc() = "F´ Python Bindings Module";
 {STANDARD_INDENTATION}{modules_definition_block}
-{STANDARD_INDENTATION}Fw::bind_fprime_types(fprime_Fw);
+{STANDARD_INDENTATION}Fw::bind_types(fprime_Fw);
 {STANDARD_INDENTATION}{modules_binding_block}
 {STANDARD_INDENTATION}{deployment_binding_function_name}(fprime_);
 }}
 """.strip()
 
-TOPOLOGY_FUNCTION_TEMPLATE = """
-fprime_{deployment_name_with_underscores}.def("{function_name}", &{deployment_name}::{function_name});
-""".strip()
-
+# Template for header includes
 INCLUDE_TEMPLATE = '#include "{header_path}"'
 
+# Template for module definitions
 MODULE_TEMPLATE = """
 {STANDARD_INDENTATION}auto fprime_{fqn_with_underscores} = fprime_{parent_fqn_with_underscores}.def_submodule("{unqualified_name}", "TODO: add doc strings");
 """.strip()

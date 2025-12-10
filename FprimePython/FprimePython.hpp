@@ -1,12 +1,10 @@
-
+// Header containing key F Prime Python binding utilities and type casters
 #ifndef FPRIME_PYTHON_HPP_
 #define FPRIME_PYTHON_HPP_
 #include <pybind11/pybind11.h>
 #include "Fw/Types/StringBase.hpp"
 #include "Fw/Types/String.hpp"
 #include "Fw/Cmd/CmdString.hpp"
-
-
 
 // All strings in F Prime behave the same way: they inherit from StringBase, they store a fixed size buffer etc.
 // Thus we can create a generic type caster for all derivatives of StringBase. Since the type_caster is already
@@ -35,6 +33,18 @@
         }\
     }
 
+//! \brief bind the deployment bindings into Python
+//!
+//! This function initializes the Python bindings for the deployment. It must bind all functions needed to start F Prime
+//! from within Python. This includes the topology setup/teardown functions typically called: `setupTopology` and
+//! `teardownTopology`, the rate group start/stop functions typically called: `startRateGroups` and `stopRateGroups`,
+//! and the TopologyState type passed into the topology setup function.
+//!
+//! \warning This must be defined by the project using fprime-python as it is the hook to define project types.
+//!
+//! Since all these functions and types are project-malleable, this function must be defined by the project.
+void setup_user_deployment(pybind11::module_& m);
+
 namespace Fw {
     //! \brief Bind F Prime types to Python for non-model types
     //!
@@ -43,8 +53,8 @@ namespace Fw {
     //!
     //! \warning this function (currently) only operates on the fw_time module.
     //!
-    //! \param fw_time_module The pybind11 module to bind the types into. 
-    void bind_fprime_manual_types(pybind11::module_& fw_time_module);
+    //! \param fw_module The pybind11 module to bind the types into. 
+    void bind_types(pybind11::module_& fw_module);
 }
 
 namespace pybind11 {

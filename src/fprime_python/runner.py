@@ -3,6 +3,7 @@
 Helper utility for running F Ptime Python projects. This will help set up the environment, and then import and execute
 the fsw_main function expected of the main deployment module.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -23,9 +24,30 @@ def main():
         sys.exit(1)
     sys.path.insert(0, str(current_path / "build-artifacts" / "python"))
 
-    # Import and execute the fsw_main function from the fsw_main module
-    from fsw_main import fsw_main
-    fsw_main()
+    # Import the fsw_main module
+    try:
+        import fsw_main
+    except ModuleNotFoundError:
+        print(f"[ERROR] Could not find the \"fsw_main.py\" in {current_path / 'build-artifacts' / 'python'}.")
+        sys.exit(1)
+    except ImportError as e:
+        print(f"[ERROR] Could not import fsw_main: {e}")
+        sys.exit(1)\
+    # Validate that the fsw_main function exists
+    if not hasattr(fsw_main, "fsw_main"):
+        print("[ERROR] The module \"fsw_main.py\" does not define \"fsw_main()\" function.")
+        sys.exit(1)
+    # Execute the fsw_main function
+    try:
+        fsw_main.fsw_main()
+    except Exception as e:
+        print(f"[ERROR] Error occurred running FSW: {e}")
+        if os.environ.get("FPRIME_PYTHON_NO_REPL_ON_ERROR", "0") == "0":
+            import code
+            code.InteractiveConsole(locals=globals()).interact()
+        else:
+            sys.exit(1)
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

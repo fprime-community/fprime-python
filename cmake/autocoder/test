@@ -1,3 +1,0 @@
-#!/bin/bash
-python -m fprime_python bindings "$@" --prefixes ../../../../build-fprime-automatic-native/ ../../../../ ../../../../lib/fprime --translation-units ../../../../FprimePythonReference/Components/ActivePythonExample/ActivePythonExample.fpp -- ../../../../build-fprime-automatic-native/FprimePythonReference/Components/ActivePythonExample
-#python -m fprime_python ../../../../build-fprime-automatic-native/FprimePythonReference/Components/ActivePythonExample

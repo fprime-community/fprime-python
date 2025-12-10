@@ -256,7 +256,7 @@ This is the Python implementation for the {unqualified_name} component. This cla
 class {unqualified_name}Base that provides the necessary plumbing to connect to the C++ stub connected to the rest of
 the F Prime topology.
 \"\"\"
-import fprime_python
+import fprime_py
 from {unqualified_name}BaseAc import {unqualified_name}Base
 
 
@@ -279,7 +279,7 @@ COMPONENT_COMMAND_HANDLER_PYTHON_TEMPLATE = """
     def {command_name}_cmdHandler(self, {command_arg_names}):
         \"\"\" Handle the {command_name} command \"\"\"
         # TODO: Implement command handler
-        self.cmdResponse_out(opCode, cmdSeq, fprime_python.Fw.CmdResponse(fprime_python.Fw.CmdResponse.T.OK))
+        self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.OK))
 """.strip()
 
 # Template for the Python component base class that provides delegation to the C++ implementation and the _init_ac
@@ -371,7 +371,7 @@ def fix_arguments(cpp_type: str, is_command: bool) -> str:
     return cpp_type
 
 
-def get_param_specification(self, param_list: List[FormalParameterDataHelper], is_command: bool=False) -> str:
+def get_param_specification(param_list: List[FormalParameterDataHelper], is_command: bool=False) -> str:
     """ Get the parameter specification string for a list of formal parameters
     
     This is a helper function that generates the C++ argument specification string for a list of formal parameters.
@@ -448,7 +448,7 @@ class ComponentImplementationGenerator(CodeGenerator):
                     return_type=port.return_type.cpp_type,
                     class_qualifier=f"{component.unqualified_name} ::",
                     port_name=port.unqualified_name,
-                    port_arg_specification=self.get_param_specification([fake_param("FwIndexType", "portNum")] +list(port.parameters)),
+                    port_arg_specification=get_param_specification([fake_param("FwIndexType", "portNum")] +list(port.parameters)),
                     terminator=" {",
                 ),
                 port_name=port.unqualified_name,
@@ -467,7 +467,7 @@ class ComponentImplementationGenerator(CodeGenerator):
                 command_handler_declaration=COMPONENT_COMMAND_DECLARATION_TEMPLATE.format(
                     class_qualifier=f"{component.unqualified_name} ::",
                     command_name=command.unqualified_name,
-                    command_arg_specification=self.get_param_specification([fake_param("FwOpcodeType", "opCode"), fake_param("U32", "cmdSeq")] + list(command.parameters), True),
+                    command_arg_specification=get_param_specification([fake_param("FwOpcodeType", "opCode"), fake_param("U32", "cmdSeq")] + list(command.parameters), True),
                     terminator=" {"
                 ),
                 command_name=command.unqualified_name,
@@ -524,7 +524,7 @@ class ComponentImplementationGenerator(CodeGenerator):
                 return_type=port.return_type.cpp_type,
                 class_qualifier=f"",
                 port_name=port.unqualified_name,
-                port_arg_specification=self.get_param_specification([SimpleNamespace(cpp_type="FwIndexType", name="portNum")] +list(port.parameters)),
+                port_arg_specification=get_param_specification([SimpleNamespace(cpp_type="FwIndexType", name="portNum")] +list(port.parameters)),
                 terminator=";"
             )
             for port in component.get_ports(kind_filter="input", type_filter=GeneralPortInstance)
@@ -533,7 +533,7 @@ class ComponentImplementationGenerator(CodeGenerator):
             COMPONENT_COMMAND_DECLARATION_TEMPLATE.format(
                 class_qualifier=f"",
                 command_name=command.unqualified_name,
-                command_arg_specification=self.get_param_specification([fake_param("FwOpcodeType", "opCode"), fake_param("U32", "cmdSeq")] + list(command.parameters), True),
+                command_arg_specification=get_param_specification([fake_param("FwOpcodeType", "opCode"), fake_param("U32", "cmdSeq")] + list(command.parameters), True),
                 terminator=";"
             )
             for command in component.commands
@@ -576,7 +576,7 @@ class ComponentImplementationGenerator(CodeGenerator):
 
         namespaces = component.cpp_fqn.split("::")[:-1]
         base_class_header = Path(self.include_manager.get_include_path(self.get_annotated_node(component))).parent / f"{component.unqualified_name}ComponentAc.hpp"
-        includes = [f"#include \"{base_class_header.as_posix()}\""] + ["#include \"fprime-python/fprime-python.hpp\""]
+        includes = [f"#include \"{base_class_header.as_posix()}\""] + ["#include \"FprimePython/FprimePython.hpp\""]
         component_hpp_lines = COMPONENT_DEFINITION_TEMPLATE.format(
             unqualified_name=component.unqualified_name,
             include_block="\n".join(includes),
