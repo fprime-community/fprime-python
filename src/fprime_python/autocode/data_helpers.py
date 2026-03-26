@@ -69,19 +69,19 @@ class DataTypeDataHelper(ObjectDataHelper):
         """ Get the C++ type string for this type
         
         This returns the C++ type string for the given type object. If the type object is None, this returns "void". If
-        the type object is a string type, this returns "--string--" as a placeholder because modeled strings are built
-        into use-specific types.
+        the type object is a string type, this returns "string" as a placeholder because modeled strings are built use
+        a variety of C++ types depending on context.
 
         Returns:
             The C++ type string for this type
         """
         if self.object is None:
             return "void"
-        elif isinstance(self.object, StringType):
-            return "--string--"
-        symbol = Symbol.construct(self.object.node)
-        return self.get_fully_qualified_cpp_name(symbol, self.analysis)
-
+        try:
+            symbol = Symbol.construct(self.object.node)
+            return self.get_fully_qualified_cpp_name(symbol, self.analysis)
+        except AttributeError:
+            return self.object.get_underlying_type()
 
 class PortDataHelper(ObjectDataHelper):
     """ Helper class for processing port data
@@ -240,7 +240,7 @@ class ComponentDataHelper(ObjectDataHelper):
     @property
     def ports(self) -> List[GeneralPortInstance]:
         """ Return the port objects for this component """
-        return [PortDataHelper(port, self.analysis) for port in self.troll.port_map.values()]
+        return [PortDataHelper(port, self.analysis) for port in self.troll.port_map().values()]
     
     @property
     def general_ports(self) -> List[GeneralPortInstance]:

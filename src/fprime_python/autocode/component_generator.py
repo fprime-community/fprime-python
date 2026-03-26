@@ -284,7 +284,7 @@ COMPONENT_COMMAND_HANDLER_PYTHON_TEMPLATE = """
 
 # Template for the Python component base class that provides delegation to the C++ implementation and the _init_ac
 # method that stores a pointer to the C++ object. Delegation is done via __getattr__ and __setattr__ methods such that
-# any attribute will be deledgated to the C++ implementation unless it is the "this" attribute itself.
+# any attribute will be delegated to the C++ implementation unless it is the "this" attribute itself.
 PYTHON_CLASS_TEMPLATE = '''
 class {unqualified_name}Base(object):
     """ Auto-coded base class for {unqualified_name}
@@ -350,7 +350,7 @@ class {unqualified_name}Base(object):
 def fix_arguments(cpp_type: str, is_command: bool) -> str:
     """ Fix argument types for calls
 
-    Strings must be select their type by the usage. Comands use CmdStringArg while ports use StringBase. This
+    Strings must be select their type by the usage. Commands use CmdStringArg while ports use StringBase. This
     function selects between the two.
 
     Additionally, this patches a bug where the FPP generated arguments are passed-by-value, and thus need to have
@@ -362,9 +362,9 @@ def fix_arguments(cpp_type: str, is_command: bool) -> str:
     Returns:
         The fixed C++ type string for use in argument lists
     """
-    if "--string--" in cpp_type and is_command:
+    if "string" in cpp_type and is_command:
         return "const Fw::CmdStringArg&"
-    if "--string--" in cpp_type:
+    if "string" in cpp_type:
         return "const Fw::StringBase&"
     if is_command and cpp_type.startswith("const ") and cpp_type.endswith("&"):
         return cpp_type[len("const "):-len("&")]
