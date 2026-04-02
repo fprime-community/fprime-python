@@ -10,7 +10,7 @@ namespace Console {
 
 void PythonConsole::writeMessage(const CHAR* message, const FwSizeType size) {
     pybind11::gil_scoped_acquire acquire{};
-    pybind11::print(message);
+    pybind11::print(message, pybind11::arg("end") = "");
 }
 
 Os::ConsoleHandle* PythonConsole::getHandle() {

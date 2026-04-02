@@ -67,12 +67,14 @@ class ComponentPybindGenerator(FppPybindBindingGenerator):
         # declarations for each present item of: output ports, events, "doDispatch", "getTime", and "cmdResponse_out".
 
         # First establish a set of functions whose presence is optional and based on the components properties
-        optional_functions = [("doDispatch", is_queued), ("getTime", has_time_port), ("cmdResponse_out", has_commands)]
+        optional_functions = [("doDispatch", is_queued), ("dispatchAvailableMessages", is_queued),
+                              ("getTime", has_time_port), ("cmdResponse_out", has_commands)]
         standard = [optional for optional, exists in optional_functions if exists]
 
         # Add in the output ports, and events to the standard list
         output_ports = component.get_ports(kind_filter="output", type_filter=GeneralPortInstance)
         standard += [f"{DataHelper.get_unqualified_name(name)}_out" for name in output_ports] + \
+                    [f"isConnected_{DataHelper.get_unqualified_name(name)}_OutputPort" for name in output_ports] + \
                     [component.event_to_dispatch_method(event) for event in component.events]
         # Generate the .def lines for each standard method using the standard_def helper
         definitions = [self.standard_def(method, component.cpp_fqn) for method in standard]
@@ -553,12 +555,14 @@ class ComponentImplementationGenerator(CodeGenerator):
         is_queued = component.kind == "queued"
 
         # First establish a set of functions whose presence is optional and based on the components properties
-        optional_functions = [("doDispatch", is_queued), ("getTime", has_time_port), ("cmdResponse_out", has_commands)]
+        optional_functions = [("doDispatch", is_queued), ("dispatchAvailableMessages", is_queued),
+                              ("getTime", has_time_port), ("cmdResponse_out", has_commands)]
         standard = [optional for optional, exists in optional_functions if exists]
 
         # Add in the output ports, and events
         output_ports = component.get_ports(kind_filter="output", type_filter=GeneralPortInstance)
         standard += [f"{DataHelper.get_unqualified_name(name)}_out" for name in output_ports] + \
+                    [f"isConnected_{DataHelper.get_unqualified_name(name)}_OutputPort" for name in output_ports] + \
                     [component.event_to_dispatch_method(event) for event in component.events] + \
                     [f"tlmWrite_{DataHelper.get_unqualified_name(channel)}" for channel in component.channels]
         using_statements = [COMPONENT_USING_TEMPLATE.format(unqualified_name=component.unqualified_name, member_name=method) for method in standard]

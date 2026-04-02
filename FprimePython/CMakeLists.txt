@@ -1,5 +1,6 @@
 # Setup the pybind11 library so that we may use it
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/PythonConsole")
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/PythonRateGroupDriver")
 register_fprime_library(
         FprimePython
     SOURCES
@@ -10,5 +11,4 @@ register_fprime_library(
         Fw_Types
         Fw_Time
 )
-
 
