@@ -24,6 +24,33 @@ In: TypeAlias = Tuple[Analysis, ...]
 
 STANDARD_INDENT = "    "
 
+
+# Namespace wrapper template
+NAMESPACE_TEMPLATE = """namespace {namespace} {{
+{namespace_block}
+}} // Namespace {namespace}
+"""
+
+
+def namespace_recurse(namespaces: List[str], interior: List[str]) -> List[str]:
+    """ Recursively wrap lines in namespaces
+    
+    This is a helper function that recursively wraps a set of lines in namespace blocks without using :: notation.
+    This will wrap one instance of NAMESPACE_TEMPLATE per recursion until all namespaces are wrapped
+    around the interior lines.
+
+    Args:
+        namespaces: The list of namespaces to wrap around the interior lines
+        interior: The lines to wrap in namespaces
+    Returns:
+        The lines wrapped in the namespace blocks
+    """
+    interior_lines = namespace_recurse(namespaces[1:], interior) if len(namespaces) > 1 else interior
+    return NAMESPACE_TEMPLATE.format(
+        namespace=namespaces[0],
+        namespace_block="\n".join(interior_lines)
+    ).splitlines()
+
 class DataHelper(object):
     """ Helper class for processing various data objects """
 

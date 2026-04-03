@@ -17,8 +17,8 @@
 register_fprime_library(
     AUTOCODER_INPUTS
         "${CMAKE_CURRENT_LIST_DIR}/PythonRateGroupDriver.fpp"
-#    SOURCES
-#        "${CMAKE_CURRENT_LIST_DIR}/PythonRateGroupDriver.cpp"
+    SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/PythonRateGroupDriver.py"
 #   DEPENDS
 #       MyPackage_MyOtherModule
 )

@@ -240,7 +240,7 @@ class ComponentDataHelper(ObjectDataHelper):
     @property
     def ports(self) -> List[GeneralPortInstance]:
         """ Return the port objects for this component """
-        return [PortDataHelper(port, self.analysis) for port in self.troll.port_map().values()]
+        return [PortDataHelper(port, self.analysis) for port in self.troll.port_map.values()]
     
     @property
     def general_ports(self) -> List[GeneralPortInstance]:

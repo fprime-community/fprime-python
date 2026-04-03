@@ -10,7 +10,7 @@ from fprime_python_model.semantics.analysis import Analysis
 from fprime_python_model.semantics.component import Component
 from fprime_python_model.semantics.port_instance import GeneralPortInstance
 
-from .binding_generator import STANDARD_INDENT, FppPybindBindingGenerator, CodeGenerator, DataHelper
+from .binding_generator import STANDARD_INDENT, FppPybindBindingGenerator, CodeGenerator, DataHelper, namespace_recurse
 from .data_helpers import ComponentDataHelper, FormalParameterDataHelper
 
 In: TypeAlias = Tuple[Analysis, ...]
@@ -131,11 +131,6 @@ COMPONENT_IMPLEMENTATION_TEMPLATE = """
 {namespace_block}
 """.strip()
 
-# Namespace wrapper template
-COMPONENT_NAMESPACE_TEMPLATE = """namespace {namespace} {{
-{namespace_block}
-}} // Namespace {namespace}
-"""
 # Component constructor template
 COMPONENT_CTOR_TEMPLATE = """
 {unqualified_name} ::{unqualified_name}(const char* name) : {unqualified_name}ComponentBase(name) {{}}
@@ -164,6 +159,18 @@ void {unqualified_name} ::init({depth_arg}FwEnumStoreType instance) {{
 {STANDARD_INDENT}}}
 {STANDARD_INDENT}// Continue the standard initialization of F Prime
 {STANDARD_INDENT}{unqualified_name}ComponentBase::init({depth_arg_name_with_comma}instance);
+}}
+""".strip()
+
+# Component deinit function template. This function performs the dereferenceing of m_self to allow for a clean process
+# shutdown.
+COMPONENT_DEINIT_TEMPLATE = """
+void {unqualified_name} ::deinit() {{
+{STANDARD_INDENT}// Acquire the GIL and dereference the Python object
+{STANDARD_INDENT}{{
+{STANDARD_INDENT}{STANDARD_INDENT}pybind11::gil_scoped_acquire acquired{{}};
+{STANDARD_INDENT}{STANDARD_INDENT}this->m_self = pybind11::none();
+{STANDARD_INDENT}}}
 }}
 """.strip()
 
@@ -232,6 +239,7 @@ class __attribute__((visibility("default"))) {unqualified_name} : public {unqual
 {STANDARD_INDENT}{unqualified_name}(const {unqualified_name}&) = delete;
 {STANDARD_INDENT}~{unqualified_name}() = default;
 {STANDARD_INDENT}void init({depth_arg}const FwEnumStoreType instance);
+{STANDARD_INDENT}void deinit();
   public:
 {port_handler_declarations}
 {command_handler_declarations}
@@ -388,25 +396,6 @@ def get_param_specification(param_list: List[FormalParameterDataHelper], is_comm
     argument_spec = ", ".join(f"{fix_arguments(param.cpp_type, is_command)} {param.name}" for param in param_list)
     return argument_spec
 
-def namespace_recurse(namespaces: List[str], interior: List[str]) -> List[str]:
-    """ Recursively wrap lines in namespaces
-    
-    This is a helper function that recursively wraps a set of lines in namespace blocks without using :: notation.
-    This will wrap one instance of COMPONENT_NAMESPACE_TEMPLATE per recursion until all namespaces are wrapped
-    around the interior lines.
-
-    Args:
-        namespaces: The list of namespaces to wrap around the interior lines
-        interior: The lines to wrap in namespaces
-    Returns:
-        The lines wrapped in the namespace blocks
-    """
-    interior_lines = namespace_recurse(namespaces[1:], interior) if len(namespaces) > 1 else interior
-    return COMPONENT_NAMESPACE_TEMPLATE.format(
-        namespace=namespaces[0],
-        namespace_block="\n".join(interior_lines)
-    ).splitlines()
-
 
 class ComponentImplementationGenerator(CodeGenerator):
     """ Generator for Python/C++ component implementation files
@@ -439,6 +428,10 @@ class ComponentImplementationGenerator(CodeGenerator):
             unqualified_name=component.unqualified_name,
             depth_arg="const FwSizeType queueDepth, " if component.kind != "passive" else "",
             depth_arg_name_with_comma="queueDepth, " if component.kind != "passive" else "",
+            STANDARD_INDENT=STANDARD_INDENT
+        ).splitlines()
+        lines += COMPONENT_DEINIT_TEMPLATE.format(
+            unqualified_name=component.unqualified_name,
             STANDARD_INDENT=STANDARD_INDENT
         ).splitlines()
         # Now add in a port template for each port 

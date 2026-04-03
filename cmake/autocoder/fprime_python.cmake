@@ -45,6 +45,7 @@ function(fprime_python_setup_autocode MODULE_NAME AC_INPUT_FILES)
             --prefixes ${FPRIME_BUILD_LOCATIONS}
             "--translation-units" ${AC_INPUT_FILES}
         OUTPUT_VARIABLE GENERATED_FILES_RAW
+        COMMAND_ERROR_IS_FATAL ANY
     )
     # Process the output into a list and ensure that this is not an interface library (does not build anything)
     string(REPLACE " " ";" GENERATED_FILES_LIST "${GENERATED_FILES_RAW}")

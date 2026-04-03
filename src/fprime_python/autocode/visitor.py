@@ -3,27 +3,30 @@
 Implements the visitor pattern used to traverse the FPP AST.
 """
 from __future__ import annotations
+from enum import Enum
 from typing import Any, Dict, List, Tuple, TypeAlias
 from pathlib import Path
 
 from fprime_python_model.utils.fpp_ast_visitor import AstVisitor
-
-
 from fprime_python_model.fpp_ast.fpp_ast_node import AstNode
 from fprime_python_model.fpp_ast import fpp_ast
-
-
 from fprime_python_model.semantics.analysis import Analysis
 
+
+from .constants import FPRIME_PYTHON_ANNOTATION
 from .include import IncludeManager
 from .types_generator import ArrayPybindCppGenerator, EnumPybindCppGenerator, StructPybindCppGenerator
 from .component_generator import ComponentImplementationGenerator, ComponentPybindGenerator
+from .topology_instance_generator import TopologyInstancePybindGenerator
 
 In: TypeAlias = Tuple[Analysis, IncludeManager]
 Out: TypeAlias = Dict[Path, List[str]]
 
-
-FPRIME_PYTHON_ANNOTATION: str = "fprime-python"
+class BindingType(Enum):
+    """ Enum for the different types of bindings that can be generated """
+    COMPONENT = "component_map"
+    TYPE = "type_map"
+    TOPOLOGY = "topology_map"
 
 
 class AnnotatedComponentVisitor(AstVisitor):
@@ -46,7 +49,7 @@ class AnnotatedComponentVisitor(AstVisitor):
         """ Default visit method is no-op """
         return {}
 
-    def base_type_generator(self, generator, _in: In, a_node: fpp_ast.Annotated[AstNode], is_component:bool=False) -> Dict[Path, List[str]]:
+    def base_type_generator(self, generator, _in: In, a_node: fpp_ast.Annotated[AstNode], binding_type: BindingType) -> Dict[Path, List[str]]:
         """ Generic method to generate type bindings
 
         This will perform the basic steps of generating the cpp, hpp, and invocation lines for a given type generator.
@@ -60,7 +63,8 @@ class AnnotatedComponentVisitor(AstVisitor):
         """
         _, node, _ = a_node
         analysis, include_manager = _in
-        type_info = analysis.type_map[node._id] if not is_component else analysis.component_map[node._id]
+        node_id_map = getattr(analysis, binding_type.value)
+        type_info = node_id_map[node._id]
         line_generator = generator(include_manager)
 
         cpp_lines = line_generator.get_cpp_lines(type_info, _in)
@@ -73,12 +77,11 @@ class AnnotatedComponentVisitor(AstVisitor):
             self.output_path / f"{node.data.name}Binding.json": invocations,
         }
 
-
     def def_array_annotated_node(
         self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefArray]]
     ) -> Dict[Path, List[str]]:
         """ Run array generation when array node is visited """
-        return self.base_type_generator(ArrayPybindCppGenerator, _in, a_node)
+        return self.base_type_generator(ArrayPybindCppGenerator, _in, a_node, BindingType.TYPE)
 
     def def_component_annotated_node(
         self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefComponent]]
@@ -98,7 +101,7 @@ class AnnotatedComponentVisitor(AstVisitor):
         # When the component is not annotated for fprime-python, then the visiting stops here
         if FPRIME_PYTHON_ANNOTATION not in [line.strip() for line in full_annotation]:
             return {}
-        base_generation = self.base_type_generator(ComponentPybindGenerator, _in, a_node, is_component=True)
+        base_generation = self.base_type_generator(ComponentPybindGenerator, _in, a_node, BindingType.COMPONENT)
    
         instance_generator = ComponentImplementationGenerator(include_manager)
         # This is to extend the #ifndef block around the class HPP lines
@@ -115,17 +118,27 @@ class AnnotatedComponentVisitor(AstVisitor):
             self.output_path / f"{node.data.name}.template.py": python_implementation_lines
         }
 
+    def def_topology_annotated_node(self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefTopology]]) -> Out:
+        """ Generate topology bindings when a topology node is visited
+        
+        Topologies in fprime-python can have python-bound component instances. In order for the users to access those
+        instances in python, they need to be bound on the topology module.
+
+
+        """
+        return self.base_type_generator(TopologyInstancePybindGenerator, _in, a_node, BindingType.TOPOLOGY)
+
     def def_enum_annotated_node(
         self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefEnum]]
     ) -> Dict[Path, List[str]]:
         """ Generate enum bindings when enum node is visited """
-        return self.base_type_generator(EnumPybindCppGenerator, _in, a_node)
+        return self.base_type_generator(EnumPybindCppGenerator, _in, a_node, BindingType.TYPE)
     
     def def_struct_annotated_node(
         self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefStruct]]
     ) -> Dict[Path, List[str]]:
         """ Generate struct bindings when struct node is visited """
-        return self.base_type_generator(StructPybindCppGenerator, _in, a_node)
+        return self.base_type_generator(StructPybindCppGenerator, _in, a_node, BindingType.TYPE)
 
     def def_module_annotated_node(
         self, in_: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefModule]]
