@@ -56,6 +56,16 @@ namespace Fw {
 void bind_types(pybind11::module_& fw_module);
 }  // namespace Fw
 
+namespace Os {
+//! \brief Bind F Prime functions to Python for non-model OSAL 
+//!
+//! The OSAL layer needs users to call Os::init(). This function binds that function into Python.
+//!
+//!
+//! \param os_module The pybind11 module to bind Os::init into.
+void bind_osal(pybind11::module_& os_module);
+} // namespace Os
+
 namespace pybind11 {
 namespace detail {
 

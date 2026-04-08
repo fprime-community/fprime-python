@@ -22,6 +22,7 @@ PYBIND11_MODULE(fprime_py, fprime_) {{
 {STANDARD_INDENTATION}fprime_.doc() = "F´ Python Bindings Module";
 {STANDARD_INDENTATION}{modules_definition_block}
 {STANDARD_INDENTATION}Fw::bind_types(fprime_Fw);
+{STANDARD_INDENTATION}Os::bind_osal(fprime_Os);
 {STANDARD_INDENTATION}{modules_binding_block}
 {STANDARD_INDENTATION}{deployment_binding_function_name}(fprime_);
 }}
@@ -54,7 +55,11 @@ def get_module_lines(files: List[Path], headers: List[Path]) -> List[str]:
         
         Only leaf modules are supplied via module_strings; this generator yields all parent modules as well by splitting
         on ".", looping through the parts, and yielding the cumulative parts joined by ".".
+
+        This will also yield standard modules: "Fw" and "Os"
         """
+        for standard_module in ["Fw", "Os"]:
+            yield standard_module
         for module_string in module_strings:
             parts = []
             for part in module_string.split("."):

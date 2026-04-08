@@ -14,10 +14,42 @@ from .binding_generator import STANDARD_INDENT, FppPybindBindingGenerator, names
 
 In: TypeAlias = Tuple[Analysis, ...]
 
+TOPOLOGY_TEMPLATE_LINES = """
+// Bind for the topology interface functions
+m.def("setup", &{topology_namespace}::setup,
+    R"doc(
+Topology setup function for {topology_qualified_name} topology
+
+This function will perform the setup of the {topology_qualified_name} topology, running through all the defined phases
+through startTasks.
+
+Args:
+    state: The state object to use for the topology setup (user defined, user bound)
+Returns:
+    None. Does not block
+)doc",
+    pybind11::arg("state"), pybind11::call_guard<pybind11::gil_scoped_release>());
+m.def("teardown", &{topology_namespace}::teardown,
+    R"doc(
+Topology teardown function for {topology_qualified_name} topology
+
+This function will perform the teardown of the {topology_qualified_name} topology, running through all the defined phases
+through after startTasks.
+
+Args:
+    state: The state object to use for the topology teardown (user defined, user bound)
+Returns:
+    None. Does not block
+)doc",
+    pybind11::arg("state"), pybind11::call_guard<pybind11::gil_scoped_release>());
+{instances_lines}
+""".strip()
+
 INSTANCES_TEMPLATE_LINES = """
+// Bind each @fprime-python instance to python under the Instances struct
 pybind11::class_<{namespace_name}::FprimePythonInstances>(m, "Instances")
 {STANDARD_INDENT}{instance_lines};
-"""
+""".strip()
 
 INSTANCE_TEMPLATE_LINES = """
 {STANDARD_INDENT}.def_property_readonly_static("{unqualified_instance_name}",
@@ -70,10 +102,15 @@ class TopologyInstancePybindGenerator(FppPybindBindingGenerator):
             ).splitlines()
             for instance in instances 
         ]
-        return INSTANCES_TEMPLATE_LINES.format(
+        instances_lines = INSTANCES_TEMPLATE_LINES.format(
             namespace_name=topology_namespace,
             instance_lines="\n".join(itertools.chain.from_iterable(base_lines)),
             STANDARD_INDENT=STANDARD_INDENT
+        ).splitlines()
+        return TOPOLOGY_TEMPLATE_LINES.format(
+            topology_namespace=topology_namespace,
+            topology_qualified_name=str(topology.get_qualified_name()).replace(".", "::"),
+            instances_lines="\n".join(instances_lines)
         ).splitlines()
     
     def get_cpp_includes(self, type_object: Type, _: In) -> List[str]:
