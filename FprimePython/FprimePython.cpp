@@ -4,6 +4,7 @@
 #include "Fw/Comp/QueuedComponentBase.hpp"
 #include "Fw/Time/Time.hpp"
 #include "Fw/Time/TimeInterval.hpp"
+#include "Os/Os.hpp"
 #include <atomic>
 #include <tuple>
 #include <unordered_map>
@@ -75,3 +76,9 @@ void bind_types(pybind11::module_& fw_module) {
         });
 }
 }  // namespace Fw
+namespace Os {
+// Function to bind manual OSAL functions
+void bind_osal(pybind11::module_& os_module) {
+    os_module.def("init", &Os::init, "Initialize the OSAL layer", pybind11::call_guard<pybind11::gil_scoped_release>());
+}
+} // namespace Os
