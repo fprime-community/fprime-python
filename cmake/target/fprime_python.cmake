@@ -59,6 +59,13 @@ endfunction(fprime_python_add_module_target)
 ####
 function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES FULL_DEPENDENCIES)
     fprime_python_add_module_target("${MODULE}" "${TARGET}" "${SOURCES}" "${DEPENDENCIES}")
+    # Only a single fprime_py module may exist per build: skip additional
+    # deployments (e.g. other cFS apps within the same cFS mission build)
+    if (TARGET "fprime_py")
+        message(STATUS "[fprime_python] Skipping deployment '${MODULE}': fprime_py already exists")
+        return()
+    endif()
+    message(STATUS "[fprime_python] Deployment '${MODULE}' dependencies: ${FULL_DEPENDENCIES}")
 
     # Generate the Python module initialization file and add it to a pybind11 module called "fprime_python". This sets
     # forth the top level module that users will import to access the deployment.

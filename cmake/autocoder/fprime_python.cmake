@@ -35,6 +35,12 @@ function(fprime_python_setup_autocode MODULE_NAME AC_INPUT_FILES)
     # Locate the fprime-python-ac tool and ensure it exists
     find_program(FPRIME_PYTHON_AC NAMES fprime-python-ac REQUIRED)
     fprime_cmake_ASSERT("'fprime-python-ac' not found" NOT "${FPRIME_PYTHON_AC}" MATCHES ".*-NOTFOUND")
+    # Newer F Prime versions track build locations as a property of the global
+    # interface target (populated as projects/libraries register), not as the
+    # FPRIME_BUILD_LOCATIONS variable: read it at autocode time
+    if (TARGET "${FPRIME_GLOBAL_INTERFACE_TARGET}")
+        get_property(FPRIME_BUILD_LOCATIONS TARGET "${FPRIME_GLOBAL_INTERFACE_TARGET}" PROPERTY FPRIME_LOCATIONS)
+    endif()
     # Execute in dry-run mode to get the list of files that would be generated
     execute_process(
         COMMAND "${FPRIME_PYTHON_AC}"
