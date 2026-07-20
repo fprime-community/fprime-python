@@ -5,6 +5,7 @@
 #include "Fw/Time/Time.hpp"
 #include "Fw/Time/TimeInterval.hpp"
 #include "Os/Os.hpp"
+#include "Os/RawTime.hpp"
 #include <atomic>
 #include <tuple>
 #include <unordered_map>
@@ -80,5 +81,10 @@ namespace Os {
 // Function to bind manual OSAL functions
 void bind_osal(pybind11::module_& os_module) {
     os_module.def("init", &Os::init, "Initialize the OSAL layer", pybind11::call_guard<pybind11::gil_scoped_release>());
+    pybind11::class_<Os::RawTime>(os_module, "RawTime")
+        .def(pybind11::init<>())
+        .def("now", [](Os::RawTime& self) { self.now(); },
+             "Update the raw time to the current time",
+             pybind11::call_guard<pybind11::gil_scoped_release>());
 }
 } // namespace Os

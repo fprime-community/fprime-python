@@ -80,7 +80,10 @@ function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES 
     # Install the fprime_python target and any associated python files with a post-build install command
     _fprime_python_install_helper("${FULL_DEPENDENCIES}")
     add_custom_command(TARGET "fprime_py" POST_BUILD COMMAND "${CMAKE_COMMAND}"
-            -DCMAKE_INSTALL_COMPONENT=fprime-python -P ${CMAKE_BINARY_DIR}/cmake_install.cmake)
+            -DCMAKE_INSTALL_COMPONENT=fprime-python
+            -DFPRIME_INSTALL_DEST=${FPRIME_INSTALL_DEST}
+            -DFPRIME_BUILD_DIR=${CMAKE_BINARY_DIR}
+            -P ${FPRIME_FRAMEWORK_PATH}/cmake/target/fprime_install.cmake)
 endfunction()
 
 ####
