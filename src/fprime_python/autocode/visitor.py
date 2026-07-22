@@ -165,7 +165,7 @@ class AnnotatedComponentVisitor(AstVisitor):
         output = {}
         for member in tu.members:
             # Filter out members by translation unit path
-            location = Path(self.location_map[member.node[1].node._id].path).resolve()
+            location = Path(self.location_map[member.node[1].node._id].file).resolve()
             if location not in self.accepted_tus:
                 continue
             # Note: translation unit members are module members of the implicit module

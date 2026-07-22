@@ -61,7 +61,7 @@ class IncludeManager(object):
             The include path as a string
         """
         symbol = Symbol.construct(node)
-        location = Path(self.location_map[symbol.get_node_id()].path.parent).resolve()
+        location = Path(self.location_map[symbol.get_node_id()].file.parent).resolve()
         
         parent_prefixes = [prefix for prefix in self.prefixes if location.is_relative_to(prefix.resolve())]
 
