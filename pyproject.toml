@@ -31,7 +31,7 @@ classifiers = [
 ]
 dependencies = [
     "pybind11>=3.0.1",
-    "fprime-python-model",
+    "fprime-python-model>=3.3.0a1",
 ]
 
 [project.urls]
