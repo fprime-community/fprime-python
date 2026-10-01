@@ -38,7 +38,7 @@ class ArrayBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, array_type: fpp.ArrayType
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, array_type: fpp.Type.Array
     ) -> None:
         """ Initialize the generator for one array definition
 
@@ -72,7 +72,7 @@ class ArrayBindingGenerator(BindingGenerator):
         F Prime makes such an array's `ElementType` a `Fw::ExternalString`, a view onto storage inside the
         array. It cannot be copied, so the element crosses into Python as a `std::string` instead.
         """
-        return isinstance(self.array_type.anon_array.elt_type.underlying_type, fpp.StringType)
+        return isinstance(self.array_type.anon_array.elt_type.underlying_type, fpp.Type.String)
 
     def bind(self, body: Body) -> None:
         """ Write the pybind11 statements binding this array """
@@ -144,7 +144,7 @@ class EnumBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, enum_type: fpp.EnumType
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, enum_type: fpp.Type.Enum
     ) -> None:
         """ Initialize the generator for one enum definition
 
@@ -221,7 +221,7 @@ class StructBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, struct_type: fpp.StructType
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, struct_type: fpp.Type.Struct
     ) -> None:
         """ Initialize the generator for one struct definition
 
@@ -234,7 +234,7 @@ class StructBindingGenerator(BindingGenerator):
         self.struct_type = struct_type
 
     @property
-    def bound_members(self) -> List[Tuple[str, fpp.Type]]:
+    def bound_members(self) -> List[Tuple[str, fpp.Type.Variant]]:
         """ The struct's bindable members and their types, in declaration order
 
         The semantic type lists its members in declaration order, which is the order F Prime declares the

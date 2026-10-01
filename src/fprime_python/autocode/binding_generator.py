@@ -88,7 +88,7 @@ class BindingGenerator(ABC):
     #: Suffix of the generated invocation snippet, e.g. PyActiveBinding.json
     INVOCATION_SUFFIX = "Binding"
 
-    def __init__(self, include_manager: IncludeManager, symbol: fpp.Symbol) -> None:
+    def __init__(self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant) -> None:
         """ Initialize the generator for one definition
 
         Args:

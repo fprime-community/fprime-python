@@ -30,7 +30,7 @@ classifiers = [
 ]
 dependencies = [
     "pybind11>=3.0.1",
-    "fprime-fpp-python==3.3.21",
+    "fprime-fpp-python==3.4.0",
     "fprime-cpp-codegen==0.2.0",
 ]
 

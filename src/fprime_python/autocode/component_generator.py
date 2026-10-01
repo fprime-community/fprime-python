@@ -66,7 +66,7 @@ class ComponentBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, component: fpp.Component
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, component: fpp.Component
     ) -> None:
         """ Initialize the generator for one component
 
@@ -221,7 +221,7 @@ class ComponentImplementationGenerator(object):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, component: fpp.Component
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, component: fpp.Component
     ) -> None:
         """ Initialize the generator for one component
 

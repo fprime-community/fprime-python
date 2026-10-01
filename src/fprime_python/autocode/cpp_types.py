@@ -47,7 +47,7 @@ class UnsupportedTypeError(Exception):
     """ An FPP type has no C++ spelling that this autocoder knows how to produce """
 
 
-def type_name(type_: fpp.Type, string_class: StringClass) -> str:
+def type_name(type_: fpp.Type.Variant, string_class: StringClass) -> str:
     """ The C++ name of an FPP type, as declared
 
     Args:
@@ -60,24 +60,24 @@ def type_name(type_: fpp.Type, string_class: StringClass) -> str:
     """
     # A modeled string has no C++ type of its own. An alias of one is spelled the same way, because such an
     # alias names a size rather than a type -- F Prime generates no header for it.
-    if isinstance(type_.underlying_type, fpp.StringType):
+    if isinstance(type_.underlying_type, fpp.Type.String):
         return string_class.value
     # Arrays, enums, structs, aliases and abstract types are all named by their defining symbol. Using the
     # symbol keeps an alias spelled as the alias rather than as the type it aliases.
     symbol = type_.def_symbol
     if symbol is not None:
         return cpp_name(symbol.qualified_name)
-    if isinstance(type_, fpp.BooleanType):
+    if isinstance(type_, fpp.Type.Boolean):
         return "bool"
     # Integers and floats name themselves through their kind, e.g. IntegerKind.U32 -> "U32"
-    if isinstance(type_, (fpp.PrimitiveIntType, fpp.FloatType)):
+    if isinstance(type_, (fpp.Type.PrimitiveInt, fpp.Type.Float)):
         return type_.value.name
     raise UnsupportedTypeError(
         f"FPP type {type_!r} is anonymous and has no C++ name; name it in the model to bind it"
     )
 
 
-def value_type(type_: Optional[fpp.Type], string_class: StringClass) -> str:
+def value_type(type_: Optional[fpp.Type.Variant], string_class: StringClass) -> str:
     """ The C++ spelling of a type where it is passed or returned by value
 
     Args:
@@ -91,7 +91,7 @@ def value_type(type_: Optional[fpp.Type], string_class: StringClass) -> str:
     return type_name(type_, string_class)
 
 
-def formal_parameter_type(param: fpp.FormalParam, string_class: StringClass) -> str:
+def formal_parameter_type(param: fpp.ast.FormalParam, string_class: StringClass) -> str:
     """ The C++ spelling of a formal parameter, reference qualifiers included
 
     Args:
@@ -103,7 +103,7 @@ def formal_parameter_type(param: fpp.FormalParam, string_class: StringClass) -> 
     type_ = param.type_name.resolved_type
     assert type_ is not None
     name = type_name(type_, string_class)
-    if param.kind == fpp.FormalParamKind.Ref:
+    if param.kind == fpp.ast.FormalParamKind.Ref:
         return f"{name}&"
     # `is_primitive` looks through aliases, so an alias of a primitive is passed by value under the
     # alias's own name, which is how F Prime's autocoder spells it.
@@ -112,7 +112,7 @@ def formal_parameter_type(param: fpp.FormalParam, string_class: StringClass) -> 
     return f"const {name}&"
 
 
-def struct_member_getter(type_: fpp.Type) -> Tuple[str, bool]:
+def struct_member_getter(type_: fpp.Type.Variant) -> Tuple[str, bool]:
     """ The return type of a generated struct member getter, and whether that getter is const
 
     F Prime generates one const getter returning by value for a member whose type is primitive or an
@@ -127,7 +127,7 @@ def struct_member_getter(type_: fpp.Type) -> Tuple[str, bool]:
     """
     # An enumeration member is stored and returned as the enumeration's underlying `T`, not as the F Prime
     # enumeration class that wraps it. An alias of an enumeration is the same, under the alias's own name.
-    if isinstance(type_.underlying_type, fpp.EnumType):
+    if isinstance(type_.underlying_type, fpp.Type.Enum):
         return f"{type_name(type_, StringClass.STRUCT_MEMBER)}::T", True
     if type_.is_primitive:
         return type_name(type_, StringClass.STRUCT_MEMBER), True
