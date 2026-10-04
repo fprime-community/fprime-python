@@ -92,6 +92,15 @@ from fprime_python.Fw.Time import Time
 fw_time_object = Time()
 ```
 
+Struct members are available as properties and as the autocoded `get_<member>()`/`set_<member>()` functions. Members
+declared as inlined arrays (e.g. `rgb: [768] U8`) are copied: reading one returns a `list` of the elements and writing
+one accepts any sequence (`list`, `tuple`, `bytes`, ...) of exactly the declared length.
+
+```python
+palette.rgb = bytes(768)   # or palette.set_rgb([...])
+red = palette.rgb[0]       # or palette.get_rgb()[0]
+```
+
 ## TODO: custom bindings
 
 ## TODO: Deployments, 

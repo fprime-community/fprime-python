@@ -202,6 +202,36 @@ STRUCT_GETTER_SETTER_TEMPLATE = """
 .def("set_{name}", &{fqn}::set_{name})
 """
 
+# Struct members that are inlined arrays (e.g. `rgb: [768] U8`) are C arrays in the autocoded C++ and have no Python
+# equivalent. They are bound by value: the getter copies the elements into a list and the setter copies the elements
+# of any sequence of the right length (a list, tuple, bytes, ...) into the array.
+STRUCT_INLINE_ARRAY_GETTER_TEMPLATE = """[](const {fqn}& self) {{
+    pybind11::list items;
+    for (const auto& item : self.get_{name}()) {{
+        items.append(pybind11::cast(item));
+    }}
+    return items;
+}}"""
+STRUCT_INLINE_ARRAY_SETTER_TEMPLATE = """[]({fqn}& self, const pybind11::sequence& items) {{
+    using Element = std::remove_extent<{fqn}::Type_of_{name}>::type;
+    constexpr FwSizeType size = std::extent<{fqn}::Type_of_{name}>::value;
+    if (pybind11::len(items) != size) {{
+        throw pybind11::value_error("{name} requires exactly " + std::to_string(size) + " elements");
+    }}
+    // Convert every element before writing so a failed conversion leaves the member unchanged
+    std::vector<Element> converted;
+    converted.reserve(size);
+    for (const auto& item : items) {{
+        converted.push_back(item.cast<Element>());
+    }}
+    std::copy(converted.begin(), converted.end(), self.get_{name}());
+}}"""
+STRUCT_INLINE_ARRAY_GETTER_SETTER_TEMPLATE = """
+.def_property("{name}", {getter}, {setter})
+.def("get_{name}", {getter})
+.def("set_{name}", {setter})
+"""
+
 class StructPybindCppGenerator(FppPybindBindingGenerator):
     """ Generator for FPP struct bindings into Python
     
@@ -278,16 +308,11 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
         # ambiguity when referring to the getter methods for the purposes of binding we use the non-const version of
         # the getters.
         #
-        # Additionally, struct fields with inlined arrays cannot be supported with Python bindings because Python does
-        # not support fixed-size arrays and FPP does not provide an actual fixed-sized array class to bind to.
+        # Struct fields with inlined arrays are C arrays in the autocoded C++, which pybind11 cannot bind directly, so
+        # they get lambdas copying the elements to and from a Python list instead of the autocoded getter/setter.
         getters_setters_lines = list(itertools.chain.from_iterable([
-            STRUCT_GETTER_SETTER_TEMPLATE.format(name=member,
-                                                 fqn=fully_qualified_class_name,
-                                                 getter_static_caster=self.get_getter_cast(name=member,
-                                                                                           field=members[member],
-                                                                                           fqn=fully_qualified_class_name, in_=in_),
-                                                ).splitlines()
-            for member in members.keys() if not Unqualified(member) in struct_type.sizes])
+            self.get_member_lines(member, members[member], struct_type, fully_qualified_class_name, in_).splitlines()
+            for member in members.keys()])
         )
 
         return STRUCT_TEMPLATE.format(STANDARD_INDENT=STANDARD_INDENT,
@@ -295,6 +320,37 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
             unqualified_class_name=unqualified_class_name,
             member_getter_setter_lines=f"\n{STANDARD_INDENT}".join(getters_setters_lines)).splitlines()
     
+    def get_member_lines(self, name, field: Type, struct_type: StructType, fqn: str, in_: In) -> str:
+        """ Get the binding lines (property, getter, and setter) for one struct member
+
+        Args:
+            name: name of the member
+            field: the type of the member
+            struct_type: the struct containing the member
+            fqn: fully qualified name of the struct containing the member
+            in_: input support tuple
+        Returns:
+            The binding lines for the member
+        """
+        if Unqualified(name) in struct_type.sizes:
+            return STRUCT_INLINE_ARRAY_GETTER_SETTER_TEMPLATE.format(
+                name=name,
+                getter=STRUCT_INLINE_ARRAY_GETTER_TEMPLATE.format(name=name, fqn=fqn),
+                setter=STRUCT_INLINE_ARRAY_SETTER_TEMPLATE.format(name=name, fqn=fqn),
+            )
+        return STRUCT_GETTER_SETTER_TEMPLATE.format(
+            name=name, fqn=fqn, getter_static_caster=self.get_getter_cast(name=name, field=field, fqn=fqn, in_=in_)
+        )
+
+    def get_cpp_includes(self, struct_type: StructType, in_: In) -> List[str]:
+        """ Get any includes required by this type generator """
+        return super().get_cpp_includes(struct_type, in_) + [
+            "#include <algorithm>",
+            "#include <string>",
+            "#include <type_traits>",
+            "#include <vector>",
+        ]
+
     def get_field_info(self, name, field: Type, in_: In) -> Tuple[str, str]:
         """ Get the type of a field and whether it should be passed by reference
         
