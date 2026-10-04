@@ -1,78 +1,110 @@
 """ fprime_python.include:
 
-This module contains utilities for managing include statements in generated C++ code. It is constructed around a set of
-prefixes, and then can determine the include location based on those prefixes and the AST node provided.
-"""
-from typing import Dict, List
-from pathlib import Path
+Works out the include path of the header F Prime's autocoder generates for a given FPP definition.
 
-from fprime_python_model.fpp_ast import fpp_ast
-from fprime_python_model.fpp_ast.fpp_ast_node import AstNode
-from fprime_python_model.semantics.symbol import Symbol, AliasTypeSymbol, ArraySymbol, ComponentSymbol, ConstantSymbol, EnumSymbol, PortSymbol, StructSymbol, TopologySymbol
+F Prime generates its headers into the build cache under a path that mirrors the defining `.fpp` file's
+path relative to a build location, so the include path of a definition's header is that relative
+directory plus a file name derived from the definition's kind. This module is constructed around the
+project's build locations and resolves definitions against them.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, Iterable, Optional, Type
+
+import fpp
+
+
+class IncludeError(Exception):
+    """ The include path of a definition's generated header could not be determined """
+
 
 class IncludeManager(object):
     """ Manages the include paths for generated C++ code based on provided prefixes
 
-    Prefixes are synonymous with the include directories provided by the project. These prefixes are expected to be
-    relative to the working directory and represent the base paths where generated header files can be found.
-
-    Include directories are relative to the nearest prefix.
+    Prefixes are the build locations of the project: the framework, library and project roots that
+    F Prime mirrors into the build cache. Include paths are relative to the closest enclosing prefix.
     """
-    symbol_type_to_include_type_name = {
-        AliasTypeSymbol: "Alias",
-        ArraySymbol: "Array",
-        ComponentSymbol: "Component",
-        ConstantSymbol: "Constant",
-        EnumSymbol: "Enum",
-        PortSymbol: "Port",
-        StructSymbol: "Serializable",
-        TopologySymbol: "Topology",
 
+    #: The file-name suffix F Prime's autocoder appends per kind of definition. The suffix does not
+    #: follow from the symbol class name -- a struct's header is "SerializableAc.hpp" -- so the kinds
+    #: with a generated header are listed, and a symbol of any other kind is an error.
+    symbol_type_to_include_type_name: Dict[Type[fpp.Symbol], str] = {
+        fpp.Symbol.AliasType: "Alias",
+        fpp.Symbol.ArrayType: "Array",
+        fpp.Symbol.Component: "Component",
+        fpp.Symbol.Constant: "Constant",
+        fpp.Symbol.EnumType: "Enum",
+        fpp.Symbol.Port: "Port",
+        fpp.Symbol.StructType: "Serializable",
+        fpp.Symbol.Topology: "Topology",
     }
 
-    def __init__(self, prefixes: List[Path], location_map: Dict[int, str], prefix_working_directory: Path=Path.cwd()) -> None:
+    def __init__(
+        self,
+        prefixes: Iterable[Path],
+        prefix_working_directory: Optional[Path] = None,
+    ) -> None:
         """ Initialize the IncludeManager
 
-        The IncludeManager is initialized with a set of prefixes, a location map, and an optional working directory that
-        the prefixes are relative to.
-
         Args:
-            prefixes: A list of Path objects representing the prefixes for include paths
-            location_map: A mapping from AST node IDs to their source file locations
-            prefix_working_directory: The working directory that the prefixes are relative to (default: current
-        
+            prefixes: Build locations that include paths are relative to
+            prefix_working_directory: Directory that relative prefixes are relative to
+                (default: the current working directory)
         """
-        self.prefixes = [(prefix_working_directory / prefix).resolve() for prefix in prefixes]
-        self.location_map = location_map
+        working_directory = Path.cwd() if prefix_working_directory is None else prefix_working_directory
+        self.prefixes = [(working_directory / prefix).resolve() for prefix in prefixes]
 
-    def get_include_path(self, node: fpp_ast.Annotated[AstNode]) -> str:
-        """ Determine the include path for a given AST node
-        
-        This will take in the AstNode and determine the include path based on the prefixes provided during. The include
-        path will be relative to the nearest prefix.
+    def get_include_path(self, symbol: fpp.Symbol.Variant) -> str:
+        """ Determine the include path of the header F Prime generates for a definition
 
-        This function raises a ValueError if no include path can be determined and a KeyError if the node has not known
-        location.
-        
         Args:
-            node: The AST node to determine the include path for
-
+            symbol: The symbol of the definition whose generated header is wanted
         Returns:
-            The include path as a string
+            The include path, e.g. "Ref/PyActiveComponentAc.hpp"
+        Raises:
+            IncludeError: The definition is of a kind with no generated header, or was defined
+                outside every build location
         """
-        symbol = Symbol.construct(node)
-        location = Path(self.location_map[symbol.get_node_id()].file.parent).resolve()
-        
-        parent_prefixes = [prefix for prefix in self.prefixes if location.is_relative_to(prefix.resolve())]
-
-        possible_include_paths = [location.relative_to(prefix) for prefix in parent_prefixes]
-        possible_include_paths.sort(key=lambda path: len(path.parents))
-
         try:
             type_name = self.symbol_type_to_include_type_name[type(symbol)]
         except KeyError:
-            raise ValueError(f"Unsupported symbol type for include path determination: {type(symbol)}")
+            raise IncludeError(
+                f"Unsupported symbol type for include path determination: {type(symbol).__name__}"
+            ) from None
 
-        if possible_include_paths:
-            return f"{possible_include_paths[0].as_posix()}/{symbol.get_unqualified_name()}{type_name}Ac.hpp"
-        raise ValueError(f"No prefixed location for {location} under {parent_prefixes}")
+        directory = Path(symbol.definition.location.uri).resolve().parent
+
+        possible_include_paths = [
+            directory.relative_to(prefix)
+            for prefix in self.prefixes
+            if directory.is_relative_to(prefix)
+        ]
+        if not possible_include_paths:
+            raise IncludeError(
+                f"{symbol.qualified_name} is defined in {directory}, which is under none of the build "
+                f"locations {[str(prefix) for prefix in self.prefixes]}"
+            )
+        # The closest enclosing prefix wins, which is the relative path with the fewest components
+        possible_include_paths.sort(key=lambda path: len(path.parents))
+        file_name = f"{symbol.unqualified_name}{type_name}Ac.hpp"
+        # A definition at the root of a build location has no directory to name
+        if possible_include_paths[0] == Path("."):
+            return file_name
+        return f"{possible_include_paths[0].as_posix()}/{file_name}"
+
+    def get_sibling_path(self, symbol: fpp.Symbol.Variant, file_name: str) -> str:
+        """ Determine the include path of a file alongside a definition's generated header
+
+        The files this autocoder generates land next to the ones F Prime generates, so their include
+        paths share a directory with them.
+
+        Args:
+            symbol: The symbol of the definition whose directory is wanted
+            file_name: Name of the file in that directory
+        Returns:
+            The include path of that file
+        Raises:
+            IncludeError: The include path of the definition's own header could not be determined
+        """
+        return (Path(self.get_include_path(symbol)).parent / file_name).as_posix()

@@ -1,356 +1,264 @@
 """ fprime_python.types_generator:
 
-This file contains code generators for three FPP types: enums, structs, and arrays. Since FPP types are mapped into
-Python, but not vise-versa, we only need to generate the pybind11 C++ bindings for these types.
+Generators for three FPP types: enums, structs, and arrays. FPP types are mapped into Python but not the
+other way around, so only the pybind11 C++ bindings need generating for them.
 """
-import itertools
+from __future__ import annotations
+
 from typing import List, Tuple
 
-from fprime_python_model.fpp_ast.fpp_ast import Unqualified 
-from fprime_python_model.semantics.types_values import Type, StructType, EnumType, ArrayType, StringType, AliasType
+import fpp
+from fprime_cpp_codegen import Body
+
+from .binding_generator import BindingGenerator, expression_chain
+from .cpp_types import struct_member_getter
+from .include import IncludeManager
 
 
-from .binding_generator import FppPybindBindingGenerator, In, STANDARD_INDENT
-
-
-ARRAY_TEMPLATE = """
-pybind11::class_<{fqn}>(m, "{unqualified_class_name}")
-.def(pybind11::init<>())
-.def("__getitem__", [](const {fqn} &a, int index) {{
-{STANDARD_INDENT}if (index >= {fqn}::SIZE) {{
-{STANDARD_INDENT}{STANDARD_INDENT}throw std::out_of_range("array index out of bounds");
-{STANDARD_INDENT}}}
-{STANDARD_INDENT}return a[index];
-}}, pybind11::is_operator())
-.def("__setitem__",
-{STANDARD_INDENT}[]({fqn} &a, int index, const {fqn}::ElementType &value) {{
-{STANDARD_INDENT}if (index >= {fqn}::SIZE) {{
-{STANDARD_INDENT}{STANDARD_INDENT}throw std::out_of_range("array index out of bounds");
-{STANDARD_INDENT}}}
-{STANDARD_INDENT}a[index] = value;
-}}, pybind11::is_operator())
-.def_property_readonly_static("size", [](pybind11::object /* self */) {{
-{STANDARD_INDENT}return {fqn}::SIZE;
-}})
-.def_property_readonly_static("SIZE", [](pybind11::object /* self */) {{
-{STANDARD_INDENT}return {fqn}::SIZE;
-}});
-"""
-
-
-class ArrayPybindCppGenerator(FppPybindBindingGenerator):
+class ArrayBindingGenerator(BindingGenerator):
     """ Generator for FPP array bindings into Python
 
-    This generator works on Analysis ArrayType objects and generates the necessary pybind11 C++ code to bind the
-    array to Python. This includes a default constructor, a field-enumerated constructor, and getter/setter methods for
-    each member of the array.
-
-    The code will be wrapped in an initialization function taking a pybind11::module_& parameter such that the generated code
-    can be placed outside of a single unified binding file. This work is performed by the superclass.
-
-    Specifically, this type implements get_type_lines which generates the lines for the array definition itself.
-    
-    Example:
-    ```python
-    ArrayPybindCppGenerator().get_type_lines(array_type, model)
-    ```
+    An F Prime array is a fixed-size C++ class with an `operator[]` and a `SIZE` constant, so it is bound
+    as a Python sequence: a default constructor, `__getitem__`, `__setitem__`, and the size exposed both
+    as `size` and as `SIZE`. Bounds are checked in the binding because a C++ `operator[]` will happily
+    run off the end of the array where Python expects an `IndexError`.
 
     Example Output:
     ```cpp
-    void init_FprimePythonReference_PythonArray(pybind11::module_& m) {
-        
-        pybind11::class_<FprimePythonReference::PythonArray>(m, "PythonArray")
+    pybind11::class_<Ref::PyArray>(m, "PyArray")
         .def(pybind11::init<>())
-        .def("__getitem__", [](const FprimePythonReference::PythonArray &a, int index) {
-            if (index >= FprimePythonReference::PythonArray::SIZE) {
+        .def("__getitem__", [](const Ref::PyArray &a, int index) {
+            if (index >= Ref::PyArray::SIZE) {
                 throw std::out_of_range("array index out of bounds");
             }
             return a[index];
         }, pybind11::is_operator())
-        .def("__setitem__",
-            [](FprimePythonReference::PythonArray &a, int index, const FprimePythonReference::PythonArray::ElementType &value) {
-            if (index >= FprimePythonReference::PythonArray::SIZE) {
-                throw std::out_of_range("array index out of bounds");
-            }
-            a[index] = value;
-        }, pybind11::is_operator())
-        .def_property_readonly_static("size", [](pybind11::object /* self */) {
-            return FprimePythonReference::PythonArray::SIZE;
-        })
-        .def_property_readonly_static("SIZE", [](pybind11::object /* self */) {
-            return FprimePythonReference::PythonArray::SIZE;
-        });
-    }
+        ...
+    ```
     """
 
-    def get_type_lines(self, array_type: ArrayType, in_: In) -> List[str]:
-        """ Generate the lines for the C++ binding file for an array type
-
-        Array types require constructors and __getitem__/__setitem__ methods for each member. This function will
-        generate those lines along with the necessary class definition.
+    def __init__(
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, array_type: fpp.Type.Array
+    ) -> None:
+        """ Initialize the generator for one array definition
 
         Args:
-            array_type: The ArrayType object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            A list of strings representing the lines of C++ code for the array binding
+            include_manager: Resolves the include paths of the headers the binding needs
+            symbol: The symbol of the array being bound
+            array_type: The semantic type of the array being bound
         """
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(array_type, in_)
-        unqualified_class_name = self.get_unqualified_name(array_type, in_)
+        super().__init__(include_manager, symbol)
+        self.array_type = array_type
 
-        return ARRAY_TEMPLATE.format(STANDARD_INDENT=STANDARD_INDENT,
-            fqn=fully_qualified_class_name,
-            unqualified_class_name=unqualified_class_name).splitlines()
+    #: Bounds-checked accessor bound as one of Python's subscript operators. The index arrives from Python as
+    #: a signed int and F Prime's own subscript asserts on an out-of-range one, which would abort the
+    #: process, so the bound is checked at both ends before the array is touched.
+    SUBSCRIPT_TEMPLATE = """.def("{python_name}", []({signature}) {{
+    if (index < 0 || static_cast<FwSizeType>(index) >= {fqn}::SIZE) {{
+        throw std::out_of_range("array index out of bounds");
+    }}
+    {statement}
+}}, pybind11::is_operator())"""
+
+    #: The array's size, exposed as a class attribute
+    SIZE_TEMPLATE = """.def_property_readonly_static("{python_name}", [](pybind11::object /* cls */) {{
+    return {fqn}::SIZE;
+}})"""
+
+    @property
+    def has_string_elements(self) -> bool:
+        """ Whether the array's elements are modeled strings
+
+        F Prime makes such an array's `ElementType` a `Fw::ExternalString`, a view onto storage inside the
+        array. It cannot be copied, so the element crosses into Python as a `std::string` instead.
+        """
+        return isinstance(self.array_type.anon_array.elt_type.underlying_type, fpp.Type.String)
+
+    def bind(self, body: Body) -> None:
+        """ Write the pybind11 statements binding this array """
+        fqn = self.cpp_fqn
+        if self.has_string_elements:
+            getter, setter_value, setter = (
+                "return std::string(array[index].toChar());",
+                "const std::string &value",
+                "array[index] = value.c_str();",
+            )
+        else:
+            getter, setter_value, setter = (
+                "return array[index];",
+                f"const {fqn}::ElementType &value",
+                "array[index] = value;",
+            )
+        links = [
+            ".def(pybind11::init<>())",
+            self.SUBSCRIPT_TEMPLATE.format(
+                python_name="__getitem__",
+                signature=f"const {fqn} &array, int index",
+                statement=getter,
+                fqn=fqn,
+            ),
+            self.SUBSCRIPT_TEMPLATE.format(
+                python_name="__setitem__",
+                signature=f"{fqn} &array, int index, {setter_value}",
+                statement=setter,
+                fqn=fqn,
+            ),
+        ]
+        # F Prime spells the size SIZE; Python code reads more naturally with a lower-case alias, so both
+        # are exposed.
+        links += [
+            self.SIZE_TEMPLATE.format(python_name=python_name, fqn=fqn)
+            for python_name in ("size", "SIZE")
+        ]
+        body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))
+
+    def cpp_system_includes(self) -> List[str]:
+        """ Get any system includes required by this type generator """
+        # std::out_of_range, thrown when a Python index runs past the end of the array
+        includes = ["stdexcept"]
+        if self.has_string_elements:
+            includes.append("string")
+        return includes
 
 
-FPP_ENUM_TEMPLATE = """
-pybind11::class_<{fqn}> enumeration(m, "{unqualified_class_name}");
-{STANDARD_INDENT}enumeration.def_readwrite("e", &{fqn}::e);
-
-pybind11::native_enum<{fqn}::T>(enumeration, "T", "enum.Enum")
-{STANDARD_INDENT}{values}
-{STANDARD_INDENT}.export_values()
-{STANDARD_INDENT}.finalize();
-
-enumeration.def(pybind11::init<{fqn}::T>());
-"""
-
-FPP_ENUM_ENTRY_TEMPLATE = """.value("{enumeration}", {fqn}::{enumeration})"""
-
-
-class EnumPybindCppGenerator(FppPybindBindingGenerator):
+class EnumBindingGenerator(BindingGenerator):
     """ Generator for FPP enum bindings into Python
-    This generator works on Analysis EnumType objects and generates the necessary pybind11 C++ code to bind the
-    enum to Python.
-    
-    The code will be wrapped in an initialization function taking a pybind11::module_& parameter such that the generated code
-    can be placed outside of a single unified binding file. This work is performed by the superclass.
 
-    Specifically, this type implements get_type_lines which generates the lines for the enum definition itself.
-
-    Example:
-    ```python
-    EnumPybindCppGenerator().get_type_lines(enum_type, model)
-    ```
+    An F Prime enumeration is a class wrapping a nested `T` enumeration, so both are bound: the wrapper as
+    a class holding its `e` member, and `T` as a `pybind11::native_enum` so that it arrives in Python as a
+    real `enum.Enum`.
 
     Example Output:
     ```cpp
-    void init_FprimePythonReference_PythonEnumeration(pybind11::module_& m) {
-        
-        pybind11::class_<FprimePythonReference::PythonEnumeration> enumeration(m, "PythonEnumeration");
-            enumeration.def_readwrite("e", &FprimePythonReference::PythonEnumeration::e);
-        
-        pybind11::native_enum<FprimePythonReference::PythonEnumeration::T>(enumeration, "T", "enum.Enum")
-            .value("ENUMERATION_A", FprimePythonReference::PythonEnumeration::ENUMERATION_A)
-            .value("ENUMERATION_B", FprimePythonReference::PythonEnumeration::ENUMERATION_B)
-            .value("ENUMERATION_C", FprimePythonReference::PythonEnumeration::ENUMERATION_C)
-            .export_values()
-            .finalize();
-        
-        enumeration.def(pybind11::init<FprimePythonReference::PythonEnumeration::T>());
-    }
-    """
+    pybind11::class_<Ref::PyEnum> enumeration(m, "PyEnum");
+    enumeration.def_readwrite("e", &Ref::PyEnum::e);
 
-    def get_type_lines(self, enum_type: EnumType, in_: In) -> List[str]:
-        """ Generate the lines for the C++ binding file for an enum node
+    pybind11::native_enum<Ref::PyEnum::T>(enumeration, "T", "enum.Enum")
+        .value("A", Ref::PyEnum::A)
+        ...
+        .export_values()
+        .finalize();
 
-        Enum types require enum value definitions attached to a pybind11::native_enum object. This function will generate
-        those lines along with the class definition for the encompassing fprime enumeration class.
-
-        Args:
-            enum_type: The EnumType object from the analysis' type map to generate lines for
-            in_: input support tuple
-        """
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(enum_type, in_)
-        unqualified_class_name = self.get_unqualified_name(enum_type, in_)
-
-        
-        # Extract node(unannotated).data.constants[...].node(unannotated).data.name
-        _, unannotated_node, _ = enum_type.node
-        constants = [sub_unannotated_node.data.name for _, sub_unannotated_node, _ in unannotated_node.data.constants]
-
-        value_lines = [
-            FPP_ENUM_ENTRY_TEMPLATE.format(enumeration=member, fqn=fully_qualified_class_name)
-            for member in constants
-        ]
-
-        return FPP_ENUM_TEMPLATE.format(STANDARD_INDENT=STANDARD_INDENT,
-            fqn=fully_qualified_class_name,
-            unqualified_class_name=unqualified_class_name,
-            values=f"\n{STANDARD_INDENT}".join(value_lines)).splitlines()
-
-    def get_cpp_includes(self, enum_type: EnumType, in_: In) -> List[str]:
-        """ Get any includes required by this type generator """
-        return super().get_cpp_includes(enum_type, in_) + [
-            "#include <pybind11/native_enum.h>",
-        ]
-
-GETTER_STATIC_CAST_TEMPLATE = "static_cast<{field_type}{reference_qualifier} ({fqn}::*)() {const_qualifier}>"
-SETTER_STATIC_CAST_TEMPLATE = "static_cast<void({fqn}::*)({const_qualifier} {field_type}{reference_qualifier})>"
-
-
-STRUCT_TEMPLATE = """
-pybind11::class_<{fqn}>(m, "{unqualified_class_name}")
-{STANDARD_INDENT}.def(pybind11::init<>())
-{STANDARD_INDENT}{member_getter_setter_lines};
-"""
-STRUCT_GETTER_SETTER_TEMPLATE = """
-.def_property("{name}", {getter_static_caster}(&{fqn}::get_{name}),
-                        &{fqn}::set_{name}
-             )
-.def("get_{name}", {getter_static_caster}(&{fqn}::get_{name}))
-.def("set_{name}", &{fqn}::set_{name})
-"""
-
-class StructPybindCppGenerator(FppPybindBindingGenerator):
-    """ Generator for FPP struct bindings into Python
-    
-    This generator works on Analysis StructType objects and generates the necessary pybind11 C++ code to bind the
-    struct to Python. This includes a default constructor, a field-enumerated constructor, and getter/setter methods for
-    each member of the struct.
-
-    The code will be wrapped in an initialization function taking a pybind11::module_& parameter such that the generated code
-    can be placed outside of a single unified binding file. This work is performed by the superclass.
-
-    Specifically, this type implements get_type_lines which generates the lines for the struct definition itself.
-    
-    Example:
-    ```python
-    StructPybindCppGenerator().get_type_lines(struct_type, model)
+    enumeration.def(pybind11::init<Ref::PyEnum::T>());
     ```
-
-    Example Output:
-    ```cpp
-    void init_FprimePythonReference_PythonComplexStruct(pybind11::module_& m) {
-        
-        pybind11::class_<FprimePythonReference::PythonComplexStruct>(m, "PythonComplexStruct")
-            .def(pybind11::init<>())
-            
-            .def_property("x", static_cast<U32 (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_x),
-                                    &FprimePythonReference::PythonComplexStruct::set_x
-                        )
-            .def("get_x", static_cast<U32 (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_x))
-            .def("set_x", &FprimePythonReference::PythonComplexStruct::set_x)
-            
-            .def_property("y", static_cast<Fw::ExternalString& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_y),
-                                    &FprimePythonReference::PythonComplexStruct::set_y
-                        )
-            .def("get_y", static_cast<Fw::ExternalString& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_y))
-            .def("set_y", &FprimePythonReference::PythonComplexStruct::set_y)
-            
-            .def_property("u", static_cast<FprimePythonReference::PythonSimpleStruct& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_u),
-                                    &FprimePythonReference::PythonComplexStruct::set_u
-                        )
-            .def("get_u", static_cast<FprimePythonReference::PythonSimpleStruct& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_u))
-            .def("set_u", &FprimePythonReference::PythonComplexStruct::set_u)
-            
-            .def_property("w", static_cast<FprimePythonReference::PythonArray& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_w),
-                                    &FprimePythonReference::PythonComplexStruct::set_w
-                        )
-            .def("get_w", static_cast<FprimePythonReference::PythonArray& (FprimePythonReference::PythonComplexStruct::*)() >(&FprimePythonReference::PythonComplexStruct::get_w))
-            .def("set_w", &FprimePythonReference::PythonComplexStruct::set_w)
-            
-            .def_property("z", static_cast<FprimePythonReference::PythonEnumeration::T (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_z),
-                                    &FprimePythonReference::PythonComplexStruct::set_z
-                        )
-            .def("get_z", static_cast<FprimePythonReference::PythonEnumeration::T (FprimePythonReference::PythonComplexStruct::*)() const>(&FprimePythonReference::PythonComplexStruct::get_z))
-            .def("set_z", &FprimePythonReference::PythonComplexStruct::set_z);
-    }
     """
 
-    def get_type_lines(self, struct_type: StructType, in_: In) -> List[str]:
-        """ Generate the lines for the C++ binding file for a struct type
-        
-        Struct types require constructors and getter/setter methods for each member. This function will generate those
-        lines along with the necessary class definition.
+    def __init__(
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, enum_type: fpp.Type.Enum
+    ) -> None:
+        """ Initialize the generator for one enum definition
 
         Args:
-            struct_type: The StructType object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            A list of strings representing the lines of C++ code for the struct binding
+            include_manager: Resolves the include paths of the headers the binding needs
+            symbol: The symbol of the enumeration being bound
+            enum_type: The semantic type of the enumeration being bound
         """
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(struct_type, in_)
-        unqualified_class_name = self.get_unqualified_name(struct_type, in_)
+        super().__init__(include_manager, symbol)
+        self.enum_type = enum_type
 
-        members = struct_type.anon_struct.members
-        # The getter functions in the autocoded C++ are overloaded, so we need to generate static casts to resolve the
-        # ambiguity when referring to the getter methods for the purposes of binding we use the non-const version of
-        # the getters.
-        #
-        # Additionally, struct fields with inlined arrays cannot be supported with Python bindings because Python does
-        # not support fixed-size arrays and FPP does not provide an actual fixed-sized array class to bind to.
-        getters_setters_lines = list(itertools.chain.from_iterable([
-            STRUCT_GETTER_SETTER_TEMPLATE.format(name=member,
-                                                 fqn=fully_qualified_class_name,
-                                                 getter_static_caster=self.get_getter_cast(name=member,
-                                                                                           field=members[member],
-                                                                                           fqn=fully_qualified_class_name, in_=in_),
-                                                ).splitlines()
-            for member in members.keys() if not Unqualified(member) in struct_type.sizes])
+    def bind(self, body: Body) -> None:
+        """ Write the pybind11 statements binding this enumeration """
+        fqn = self.cpp_fqn
+        # The C++ name comes from the model, so this is not margin-stripped
+        body.lines(
+            f'pybind11::class_<{fqn}> enumeration(m, "{self.name}");\n'
+            f'enumeration.def_readwrite("e", &{fqn}::e);',
+            margin=None,
         )
+        body.blank()
+        # `native_enum` has to be finalized before anything else touches the enclosing scope, so the
+        # value chain is emitted as one statement of its own.
+        constants = [constant.name for constant in self.enum_type.node.constants]
+        body.raw(
+            expression_chain(
+                f'pybind11::native_enum<{fqn}::T>(enumeration, "T", "enum.Enum")',
+                [f'.value("{constant}", {fqn}::{constant})' for constant in constants]
+                + [".export_values()", ".finalize()"],
+            )
+        )
+        body.blank()
+        # Constructing the wrapper from one of its own values is the natural Python spelling, and can
+        # only be bound once T exists.
+        body.lines(f"enumeration.def(pybind11::init<{fqn}::T>());", margin=None)
 
-        return STRUCT_TEMPLATE.format(STANDARD_INDENT=STANDARD_INDENT,
-            fqn=fully_qualified_class_name,
-            unqualified_class_name=unqualified_class_name,
-            member_getter_setter_lines=f"\n{STANDARD_INDENT}".join(getters_setters_lines)).splitlines()
-    
-    def get_field_info(self, name, field: Type, in_: In) -> Tuple[str, str]:
-        """ Get the type of a field and whether it should be passed by reference
-        
-        When generating getter/setter casts for struct members, the function signature needs to be reconstructed. Thus,
-        the field types and reference qualifiers need to be determined. This will determine these properties based on
-        the field type.
+    def cpp_system_includes(self) -> List[str]:
+        """ Get any system includes required by this type generator """
+        return ["pybind11/native_enum.h"]
 
-        Warning: this function does not support inlined arrays as struct members because python does not support 
-            fixed-sized basic array types. Passing these in will result in a non-array type.
+
+#: Cast picking one struct member getter overload: const when it returns by value, non-const otherwise
+GETTER_STATIC_CAST_TEMPLATE = "static_cast<{field_type} ({fqn}::*)(){const_qualifier}>"
+
+#: Property and explicit accessors bound for one struct member
+STRUCT_MEMBER_TEMPLATE = """.def_property("{name}", {getter_cast}(&{fqn}::get_{name}), &{fqn}::set_{name})
+.def("get_{name}", {getter_cast}(&{fqn}::get_{name}))
+.def("set_{name}", &{fqn}::set_{name})"""
+
+
+class StructBindingGenerator(BindingGenerator):
+    """ Generator for FPP struct bindings into Python
+
+    An F Prime struct is a C++ class with a getter/setter pair per member, so it is bound as a class with
+    a default constructor and, per member, a Python property plus the explicit accessors.
+
+    The generated getters are overloaded on constness for every member that is returned by reference, so
+    referring to one needs a cast to pick an overload; the bindings use the non-const getter.
+
+    Struct members that are inline arrays are skipped. F Prime gives them a getter returning a reference
+    to a member typedef with no Python counterpart -- Python has no fixed-size array type and FPP does not
+    generate a class for an inline array -- so there is nothing to bind them to.
+
+    Example Output:
+    ```cpp
+    pybind11::class_<Ref::PySimple>(m, "PySimple")
+        .def(pybind11::init<>())
+        .def_property("x", static_cast<U32 (Ref::PySimple::*)() const>(&Ref::PySimple::get_x),
+                      &Ref::PySimple::set_x)
+        .def("get_x", static_cast<U32 (Ref::PySimple::*)() const>(&Ref::PySimple::get_x))
+        .def("set_x", &Ref::PySimple::set_x)
+        ...
+    ```
+    """
+
+    def __init__(
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, struct_type: fpp.Type.Struct
+    ) -> None:
+        """ Initialize the generator for one struct definition
 
         Args:
-            name: name of the field (member) for the getter/setter
-            field: the type of the field for the member
-            in_: input support tuple
-        Returns:
-            A tuple of the field type and the reference qualifier for the getter/setter
+            include_manager: Resolves the include paths of the headers the binding needs
+            symbol: The symbol of the struct being bound
+            struct_type: The semantic type of the struct being bound
         """
-        # Primitive types are passed by value
-        if field.is_primitive():
-            return str(field) , ""
-        # Alias types should be resolved to their underlying type
-        elif isinstance(field, AliasType):
-            return self.get_field_info(name, field.get_underlying_type(), in_)
-        # String types use external string type as the return of the getter because the string references data stored
-        # inside the struct.
-        elif isinstance(field, StringType):
-            return "Fw::ExternalString" , "&"
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(field, in_)
-        # Enumerations append "::T" to the fully qualified class name
-        if isinstance(field, EnumType):
-            return f"{fully_qualified_class_name}::T" , ""
-        # Complex types use reference qualifiers
-        return fully_qualified_class_name , "&"
+        super().__init__(include_manager, symbol)
+        self.struct_type = struct_type
 
+    @property
+    def bound_members(self) -> List[Tuple[str, fpp.Type.Variant]]:
+        """ The struct's bindable members and their types, in declaration order
 
-    def get_getter_cast(self, name, fqn: str, field: Type, in_: In) -> str:
-        """ Get static cast for a getter method
-        
-        In the autocoded C++ there are two types of (overloaded) getters: const, and non-const. This causes a compiler
-        ambiguity when referring to a getter method for the purposes of binding. To resolve this, a static cast to the
-        exact method type is required.
-
-        Warning: this function does not support inlined arrays as struct members because python does not support 
-            fixed-sized basic array types. Passing these in will result in a non-array type.
-        
-        Args:
-            name: name of the field (member) for the getter
-            fqn: fully qualified name of the struct containing the field
-            field: the type of the field for the member
-            in_: input support tuple
-        Returns:
-            The static cast string for the getter method   
+        The semantic type lists its members in declaration order, which is the order F Prime declares the
+        accessors in. Members that are inline arrays are dropped: the struct's `sizes` map holds an entry
+        for each of them.
         """
+        return [
+            (name, member_type)
+            for name, member_type in self.struct_type.anon_struct.members
+            if name not in self.struct_type.sizes
+        ]
 
-        field_type, reference_qualifier = self.get_field_info(name, field, in_)
-        return GETTER_STATIC_CAST_TEMPLATE.format(field_type=field_type,
-                                                  fqn=fqn,
-                                                  reference_qualifier=reference_qualifier,
-                                                  const_qualifier="const" if reference_qualifier != "&" else "")
+    def bind(self, body: Body) -> None:
+        """ Write the pybind11 statements binding this struct """
+        fqn = self.cpp_fqn
+        links = [".def(pybind11::init<>())"]
+        for name, member_type in self.bound_members:
+            field_type, is_const = struct_member_getter(member_type)
+            getter_cast = GETTER_STATIC_CAST_TEMPLATE.format(
+                field_type=field_type,
+                fqn=fqn,
+                const_qualifier=" const" if is_const else "",
+            )
+            links.append(
+                STRUCT_MEMBER_TEMPLATE.format(name=name, fqn=fqn, getter_cast=getter_cast)
+            )
+        body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))

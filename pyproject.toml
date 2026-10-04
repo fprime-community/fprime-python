@@ -7,7 +7,7 @@ name = "fprime-python"
 dynamic = ["version"]
 description = "F Prime to Python binding autocoder!"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 keywords = ["fprime", "embedded", "nasa", "flight", "software", "python"]
 authors = [
@@ -20,7 +20,6 @@ classifiers = [
     "Operating System :: POSIX",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -31,7 +30,13 @@ classifiers = [
 ]
 dependencies = [
     "pybind11>=3.0.1",
-    "fprime-python-model>=3.3.0a1",
+    "fprime-fpp-python==3.4.0",
+    "fprime-cpp-codegen==0.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11",
 ]
 
 [project.urls]
@@ -43,6 +48,11 @@ Repository = "https://github.com/fprime-community/fprime-python.git"
 [project.scripts]
 fprime-python-ac = "fprime_python.autocode.__main__:main"
 fprime-python-runner = "fprime_python.runner:main"
+
+[tool.mypy]
+files = ["src/fprime_python"]
+python_version = "3.10"
+strict = true
 
 ####
 # setuptools_scm dynamically generates version number from git, as well as automatically

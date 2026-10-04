@@ -1,182 +1,158 @@
 """ fprime_python.visitor:
 
 Implements the visitor pattern used to traverse the FPP AST.
+
+Generating Python bindings starts by finding what to generate them for. This visitor walks the model from
+the translation-unit level down to the definitions that get bindings: every array, enum and struct, and
+the components and topologies annotated with @fprime-python.
 """
 from __future__ import annotations
-from enum import Enum
-from typing import Any, Dict, List, Tuple, TypeAlias
+
 from pathlib import Path
+from typing import Dict
 
-from fprime_python_model.utils.fpp_ast_visitor import AstVisitor
-from fprime_python_model.fpp_ast.fpp_ast_node import AstNode
-from fprime_python_model.fpp_ast import fpp_ast
-from fprime_python_model.semantics.analysis import Analysis
+import fpp
 
-
+from .component_generator import ComponentBindingGenerator, ComponentImplementationGenerator
 from .constants import FPRIME_PYTHON_ANNOTATION
 from .include import IncludeManager
-from .types_generator import ArrayPybindCppGenerator, EnumPybindCppGenerator, StructPybindCppGenerator
-from .component_generator import ComponentImplementationGenerator, ComponentPybindGenerator
-from .topology_instance_generator import TopologyInstancePybindGenerator
-
-In: TypeAlias = Tuple[Analysis, IncludeManager]
-Out: TypeAlias = Dict[Path, List[str]]
-
-class BindingType(Enum):
-    """ Enum for the different types of bindings that can be generated """
-    COMPONENT = "component_map"
-    TYPE = "type_map"
-    TOPOLOGY = "topology_map"
+from .topology_instance_generator import TopologyBindingGenerator
+from .types_generator import (
+    ArrayBindingGenerator,
+    EnumBindingGenerator,
+    StructBindingGenerator,
+)
+from .view import ComponentView, TopologyView, is_annotated
 
 
-class AnnotatedComponentVisitor(AstVisitor):
-    """ Visitor identifying components annotated with @fprime-python
-    
-    Generating python bindings in fprime-python is done (for components) by using the annotation @fprime-python. This
-    visitor recurses from the translation unit level (root of AST) down to components and filters for components
-    annotated with the @fprime-python annotation.
+class AnnotatedDefinitionVisitor(fpp.AstVisitor):
+    """ Visitor generating bindings for the definitions of one set of translation units
 
-    Once identified, the visitor continues to visit the component's members (e.g., commands, events, etc.) detecting
-    the properties that need binding generation.
+    Bindings for FPP types are generated for every type in the visited translation units, because a bound
+    component can name any of them in a port, command, event, channel or parameter. Components and
+    topologies are only bound when they carry the @fprime-python annotation, since binding one commits the
+    project to implementing it in Python.
+
+    Definitions nested inside a component are not visited: they belong to the component's own namespace in
+    C++ and are not reachable as module-level Python types.
     """
-    def __init__(self, output_path: Path, accepted_tus: List[Path], location_map: Dict[int, str]) -> None:
-        """ Initialize the visitor """
-        self.output_path = output_path
-        self.accepted_tus = [tu.resolve() for tu in accepted_tus]
-        self.location_map = location_map
 
-    def default(self, in_: In) -> Dict[Path, List[str]]:
-        """ Default visit method is no-op """
-        return {}
-
-    def base_type_generator(self, generator, _in: In, a_node: fpp_ast.Annotated[AstNode], binding_type: BindingType) -> Dict[Path, List[str]]:
-        """ Generic method to generate type bindings
-
-        This will perform the basic steps of generating the cpp, hpp, and invocation lines for a given type generator.
-        This constructs the type generator as provided and uses it to generate the lines.
+    def __init__(
+        self,
+        output_path: Path,
+        analysis: fpp.Analysis,
+        include_manager: IncludeManager,
+    ):
+        """ Initialize the visitor
 
         Args:
-            generator: The generator class to instantiate
-            _in: The input tuple of analysis and include manager
-            a_node: The annotated AST node being visited
-            is_component: Whether the type is a component (affects naming)
+            output_path: Directory the generated files are written into
+            analysis: The analyzed model being visited
+            include_manager: Resolves the include paths of the headers the generated code needs
         """
-        _, node, _ = a_node
-        analysis, include_manager = _in
-        node_id_map = getattr(analysis, binding_type.value)
-        type_info = node_id_map[node._id]
-        line_generator = generator(include_manager)
+        self.output_path = output_path
+        self.analysis = analysis
+        self.include_manager = include_manager
+        self.output: Dict[Path, str] = {}
 
-        cpp_lines = line_generator.get_cpp_lines(type_info, _in)
-        hpp_lines = line_generator.get_hpp_lines(type_info, _in)
-        invocations = line_generator.get_init_function_invocation(type_info, _in)
+    def symbol_of(self, node: fpp.ast.AstNode) -> fpp.Symbol.Variant:
+        """ The symbol a definition node defines
 
-        return {
-            self.output_path / f"{node.data.name}BindingAc.cpp": cpp_lines,
-            self.output_path / f"{node.data.name}BindingAc.hpp": hpp_lines,
-            self.output_path / f"{node.data.name}Binding.json": invocations,
-        }
+        Args:
+            node: The definition node
+        Returns:
+            The symbol of that definition
+        """
+        return self.analysis.symbol_map[node.node_id]
 
-    def def_array_annotated_node(
-        self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefArray]]
-    ) -> Dict[Path, List[str]]:
-        """ Run array generation when array node is visited """
-        return self.base_type_generator(ArrayPybindCppGenerator, _in, a_node, BindingType.TYPE)
+    def emit(self, files: Dict[str, str]) -> None:
+        """ Record generated files against the output directory
 
-    def def_component_annotated_node(
-        self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefComponent]]
-    ) -> Dict[Path, List[str]]:
-        """ Run component generation when component node is visited
-        
-        Components are only generated when they are annotated with @fprime-python. Component generation consists of
-        generating both the binding code (cpp/hpp/invocation) as well as the component implementation code
-        (cpp/hpp/python base/python implementation) for the component.
+        Args:
+            files: A mapping of file name to file contents
+        """
+        for name, contents in files.items():
+            self.output[self.output_path / name] = contents
+
+    def visit_DefArray(self, node: fpp.ast.DefArray) -> None:
+        """ Run array generation when an array node is visited """
+        symbol = self.symbol_of(node)
+        assert isinstance(node.resolved_type, fpp.Type.Array)
+        self.emit(
+            ArrayBindingGenerator(self.include_manager, symbol, node.resolved_type).files()
+        )
+
+    def visit_DefEnum(self, node: fpp.ast.DefEnum) -> None:
+        """ Run enum generation when an enum node is visited """
+        symbol = self.symbol_of(node)
+        assert isinstance(node.resolved_type, fpp.Type.Enum)
+        self.emit(
+            EnumBindingGenerator(self.include_manager, symbol, node.resolved_type).files()
+        )
+
+    def visit_DefStruct(self, node: fpp.ast.DefStruct) -> None:
+        """ Run struct generation when a struct node is visited """
+        symbol = self.symbol_of(node)
+        assert isinstance(node.resolved_type, fpp.Type.Struct)
+        self.emit(
+            StructBindingGenerator(self.include_manager, symbol, node.resolved_type).files()
+        )
+
+    def visit_DefStateMachine(self, node: fpp.ast.DefStateMachine) -> None:
+        """ Skip a state machine definition without descending into it
+
+        fpp's analysis synthesizes a `State` enumeration inside every state machine. F Prime generates that
+        enumeration under a flattened name of its own -- `<Machine>_StateEnumAc.hpp` rather than
+        `StateEnumAc.hpp` -- and it is not a module-level type a Python implementation names, so descending
+        would bind a type that does not exist under a file name that collides between state machines.
         """
 
-        pre_annotation, node, post_annotation = a_node
-        full_annotation = pre_annotation + post_annotation
-        analysis, include_manager = _in
-        type_info = analysis.component_map[node._id]
+    def visit_DefComponent(self, node: fpp.ast.DefComponent) -> None:
+        """ Run component generation when a component node is visited
 
-        # When the component is not annotated for fprime-python, then the visiting stops here
-        if FPRIME_PYTHON_ANNOTATION not in [line.strip() for line in full_annotation]:
-            return {}
-        base_generation = self.base_type_generator(ComponentPybindGenerator, _in, a_node, BindingType.COMPONENT)
-   
-        instance_generator = ComponentImplementationGenerator(include_manager)
-        # This is to extend the #ifndef block around the class HPP lines
-        cpp_component_lines = instance_generator.get_cpp_lines(type_info, _in) 
-        hpp_component_lines = instance_generator.get_hpp_lines(type_info, _in)
-
-        python_lines = instance_generator.get_python_base_lines(type_info, _in)
-        python_implementation_lines = instance_generator.get_python_implementation_lines(type_info, _in)
-        return {
-            **base_generation,
-            self.output_path / f"{node.data.name}.cpp": cpp_component_lines,
-            self.output_path / f"{node.data.name}.hpp": hpp_component_lines,
-            self.output_path / f"{node.data.name}BaseAc.py": python_lines,
-            self.output_path / f"{node.data.name}.template.py": python_implementation_lines
-        }
-
-    def def_topology_annotated_node(self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefTopology]]) -> Out:
-        """ Generate topology bindings when a topology node is visited
-        
-        Topologies in fprime-python can have python-bound component instances. In order for the users to access those
-        instances in python, they need to be bound on the topology module.
-
-
+        Components are only generated when they are annotated with @fprime-python. Component generation
+        produces both the binding code and the component implementation that forwards into Python.
         """
-        return self.base_type_generator(TopologyInstancePybindGenerator, _in, a_node, BindingType.TOPOLOGY)
+        if not is_annotated(node, FPRIME_PYTHON_ANNOTATION):
+            return
+        symbol = self.symbol_of(node)
+        component = self.analysis.component_map[symbol]
+        # Refuse up front rather than generating a class that will not link
+        ComponentView(component).check_supported()
+        self.emit(ComponentBindingGenerator(self.include_manager, symbol, component).files())
+        self.emit(
+            ComponentImplementationGenerator(self.include_manager, symbol, component).files()
+        )
 
-    def def_enum_annotated_node(
-        self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefEnum]]
-    ) -> Dict[Path, List[str]]:
-        """ Generate enum bindings when enum node is visited """
-        return self.base_type_generator(EnumPybindCppGenerator, _in, a_node, BindingType.TYPE)
-    
-    def def_struct_annotated_node(
-        self, _in: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefStruct]]
-    ) -> Dict[Path, List[str]]:
-        """ Generate struct bindings when struct node is visited """
-        return self.base_type_generator(StructPybindCppGenerator, _in, a_node, BindingType.TYPE)
+    def visit_DefTopology(self, node: fpp.ast.DefTopology) -> None:
+        """ Generate topology bindings when an annotated topology node is visited
 
-    def def_module_annotated_node(
-        self, in_: In, a_node: fpp_ast.Annotated[AstNode[fpp_ast.DefModule]]
-    ) -> Out:
-        """ Visit a module definition recursing into its members """
-        _, node, _ = a_node
-        data = node.data
-        output = {}
-        for m in data.members:
-            output.update(self.module_member(in_, m))
-        return output
-
-    def module_member(self, in_: In, member: fpp_ast.ModuleMember) -> Out:
-        """ Visit a module member """
-        # Using the the provided match member function effectively visits types deeper in the AST
-        return self.match_module_member(in_, member)
-
-    def translation_unit(self, in_: In, tu: fpp_ast.TransUnit) -> Out:
-        """ Visit a translation unit
-        
-        Translation are filtered down to the accepted translation units only because visiting TUs outside the scope of
-        the current module risks visiting the same types in multiple modules.
+        A topology holds Python-bound component instances, and Python needs a handle on those instances
+        and on the topology's own setup and teardown, so an annotated topology is bound as a whole.
         """
-        output = {}
-        for member in tu.members:
-            # Filter out members by translation unit path
-            location = Path(self.location_map[member.node[1].node._id].file).resolve()
-            if location not in self.accepted_tus:
-                continue
-            # Note: translation unit members are module members of the implicit module
-            output.update(self.module_member(in_, member))
-        return output
+        if not is_annotated(node, FPRIME_PYTHON_ANNOTATION):
+            return
+        symbol = self.symbol_of(node)
+        topology = self.analysis.topology_map[symbol]
+        # Refuse up front rather than generating a source file that names a header F Prime never wrote
+        TopologyView(topology).check_supported()
+        self.emit(TopologyBindingGenerator(self.include_manager, symbol, topology).files())
 
-    def translation_units(
-        self, in_: In, tu_list: List[fpp_ast.TransUnit]
-    ) -> Out:
-        """ Visit a list of translation units """
-        output = {}
-        for tu in tu_list:
-            output.update(self.translation_unit(in_, tu))
-        return output
+    def generate(self, model: fpp.Model) -> Dict[Path, str]:
+        """ Visit the model's source translation units and generate for their definitions
+
+        The import units are skipped: they are present only to resolve references out of the sources, and
+        visiting them would generate the same definition in every module that depends on it. Membership is
+        the unit's rather than the file's, so a definition spliced into a source unit by `include` is
+        still generated.
+
+        Args:
+            model: The analyzed model to generate from
+        Returns:
+            A mapping of output path to file contents
+        """
+        self.output = {}
+        for translation_unit in model.ast:
+            if translation_unit.is_source:
+                self.visit(translation_unit)
+        return self.output

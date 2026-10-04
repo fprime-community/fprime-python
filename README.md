@@ -40,8 +40,9 @@ library, which handles the nuances of the Python API.
 
 ## Installation and Setup
 
-In order to use `fprime-python` download the source code, or add it as a Git submodule.  Once finished, make sure to
-pull int `pybind11` and our autocoding by running `pip install -r requirements.txt` in the `fprime-python` checkout.
+In order to use `fprime-python` download the source code, or add it as a Git submodule.  Once finished, install the
+autocoder and its dependencies by running `pip install .` in the `fprime-python` checkout. This requires Python 3.10
+or newer.
 
 Next, add the path to the download in the `library_locations` list set in settings.ini for a deployment. 
 
@@ -66,6 +67,22 @@ active component ActivePythonExample {
 Once finished, the python bindings will be autocoded and included in the next build (assuming the deployment is setup 
 as shown below). This will also produce a `<component>.template.py` file in the component folder as a basic template for
 implementing components in python.
+
+Every port, command, event, telemetry channel, parameter and internal port of the component is bound. Four
+component features cannot be bound yet, because F Prime declares a handler for each that has no Python equivalent:
+
+| Feature | Why | What happens |
+| --- | --- | --- |
+| serial port | its handler takes a serialization buffer | rejected with an error naming the port |
+| state machine instance | its actions and guards take a state machine id and a signal | rejected with an error naming the component |
+| data product container | its handler takes a `Fw::DpContainer` | rejected with an error naming the component |
+| `hook` queue-full behavior | its overflow hook takes the message that could not be queued | rejected with an error naming the component |
+
+In each case the autocoder refuses rather than generating a class that would leave the handler unimplemented and
+fail to link. Drop the `@ fprime-python` annotation to implement such a component in C++ instead.
+
+An annotated topology must be a `deployment topology`: the binding calls the topology's setup and teardown, and
+F Prime only generates those for a deployment.
 
 > [!CAUTION]
 > The `<component>.template.py` is updated on every build unlike F Prime implementation templates.
@@ -92,6 +109,15 @@ from fprime_python.Fw.Time import Time
 fw_time_object = Time()
 ```
 
+## Development
+
+Install the autocoder and its check dependencies into a virtual environment, then run the type check:
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e '.[dev]'
+.venv/bin/python -m mypy
+```
+
 ## TODO: custom bindings
 
-## TODO: Deployments, 
+## TODO: Deployments

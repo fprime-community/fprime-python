@@ -1,351 +1,173 @@
-""" component_generator.py
+""" fprime_python.component_generator:
 
-Provides the generation of pybind11 bindings for FPP components.
+Generates everything an FPP component annotated for Python needs.
+
+Two generators live here. `ComponentBindingGenerator` produces the pybind11 bindings that expose the
+component's methods to Python. `ComponentImplementationGenerator` produces the component implementation
+itself: the C++ class that F Prime's topology instantiates, which forwards every handler into a mirrored
+Python object, plus the Python base class that object inherits from and a template for the user to fill
+in.
 """
-from pathlib import Path
-from typing import List, Tuple, TypeAlias
-from types import SimpleNamespace
+from __future__ import annotations
 
-from fprime_python_model.semantics.analysis import Analysis
-from fprime_python_model.semantics.component import Component
-from fprime_python_model.semantics.port_instance import GeneralPortInstance
+from typing import Dict, List, Tuple
 
-from .binding_generator import STANDARD_INDENT, FppPybindBindingGenerator, CodeGenerator, DataHelper, namespace_recurse
-from .data_helpers import ComponentDataHelper, FormalParameterDataHelper
+import fpp
+from fprime_cpp_codegen import Body, ClassBuilder, CppDocBuilder, Output
 
-In: TypeAlias = Tuple[Analysis, ...]
+from .binding_generator import BindingGenerator, expression_chain, standard_def
+from .constants import SELF_MEMBER, SUPPORT_HEADER, TOOL_NAME
+from .include import IncludeManager
+from .view import CommandView, ComponentView, HandlerView, ParameterView
 
-def fake_param(type_string: str, name: str) -> SimpleNamespace:
-    """ Fake a formal parameter object for use in argument lists
 
-    F Prime functions (ports, commands, etc.) use formal parameter objects to represent their arguments. C++ requires a
-    few additional parameters for functions: portNum, opCode, cmdSeq, etc. This function creates a simple object that
-    masquerades as a formal parameter for use in argument lists.
+#: Telemetry write bindings keep the default timestamp argument F Prime declares, so that Python callers
+#: may leave it out and have the component request the time itself
+TELEMETRY_DEF_TEMPLATE = (
+    '.def("{name}", &{fqn}::{name}, pybind11::arg("arg"), '
+    'pybind11::arg("_tlmTime") = Fw::Time())'
+)
+
+
+def base_class_methods(component: ComponentView) -> List[str]:
+    """ The base-class methods the component exposes to Python
+
+    F Prime declares these `protected`, so the generated class re-exposes them with using-declarations
+    and the bindings take their addresses. They are the methods a Python implementation calls to act on
+    the rest of the topology: dispatching its own queue, reading the time, responding to commands,
+    invoking its output ports, and sending events.
 
     Args:
-        type_string: The C++ type string of the parameter
-        name: The name of the parameter
+        component: The component to list the methods of
+    Returns:
+        The method names, in binding order
     """
-    return SimpleNamespace(cpp_type=type_string, name=name)
+    # A queued component dispatches its own messages, whereas an active component's task does it and a
+    # passive component has no queue at all
+    conditional = [
+        ("doDispatch", component.is_queued),
+        ("dispatchAvailableMessages", component.is_queued),
+        ("getTime", component.has_time_port),
+        ("cmdResponse_out", component.has_commands),
+    ]
+    methods = [name for name, present in conditional if present]
+    methods += [port.invoker_name for port in component.output_ports]
+    methods += [port.connection_check_name for port in component.output_ports]
+    methods += [port.invoker_name for port in component.internal_ports]
+    methods += [event.dispatch_name for event in component.events]
+    return methods
 
 
-# Templates for component binding generation
-COMPONENT_TEMPLATE = """
-pybind11::class_<{fqn}>(m, "{unqualified_class_name}")
-{STANDARD_INDENT}{definitions};
-"""
-# Template used to translate telemetry channel emit call bindings while preserving default time argument
-COMPONENT_TLM_TEMPLATE = """
-.def("tlmWrite_{name}", &{fqn}::tlmWrite_{name}, pybind11::arg("arg"), pybind11::arg("_tlmTime") = Fw::Time())
-""".strip()
-
-# Component parameter get helper binding template. Calls a helper so that status and value can be returned as a tuple.
-COMPONENT_PRM_TEMPLATE = """.def("paramGet_{name}", &{fqn}::paramGet_{name}_helper)"""
-
-class ComponentPybindGenerator(FppPybindBindingGenerator):
+class ComponentBindingGenerator(BindingGenerator):
     """ Provides the generation of pybind11 bindings for FPP components
-    
-    This generator creates the pybind11 binding code required to bind FPP components to Python. This includes the
-    various telemetry channels, parameters, handlers, and commands.
+
+    This generator creates the pybind11 binding code required to bind FPP components to Python. This
+    includes the various telemetry channels, parameters, handlers, and commands.
     """
 
-    def get_type_lines(self, component: Component, in_: In) -> List[str]:
-        """ Generate the lines for the C++ binding file for a component type
-        
-        Component types require an initialization function that binds the component's members. This function will
-        generate those lines along with the necessary class definition.
+    def __init__(
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, component: fpp.Component
+    ) -> None:
+        """ Initialize the generator for one component
+
+        Args:
+            include_manager: Resolves the include paths of the headers the binding needs
+            symbol: The symbol of the component being bound
+            component: The analyzed component being bound
         """
-        analysis, *_ = in_
-        component = ComponentDataHelper(component, analysis)
+        super().__init__(include_manager, symbol)
+        self.component = ComponentView(component)
 
-        # Determine component properties that affect binding generation
-        has_time_port = bool(component.get_ports(kind_filter="time get"))
-        has_commands = bool(component.commands)
-        is_queued = component.kind == "queued"
+    def bind(self, body: Body) -> None:
+        """ Write the pybind11 statements binding this component """
+        fqn = self.cpp_fqn
+        links = [standard_def(method, fqn) for method in base_class_methods(self.component)]
+        # A parameter is read through the generated helper rather than through F Prime's own getter,
+        # because the getter reports validity through an out parameter that has no Python equivalent
+        links += [
+            f'.def("{param.getter_name}", &{fqn}::{param.helper_name})'
+            for param in self.component.parameters
+        ]
+        links += [
+            TELEMETRY_DEF_TEMPLATE.format(name=channel.write_name, fqn=fqn)
+            for channel in self.component.channels
+        ]
+        body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))
 
-        # Establish the set of .def functions required by this component. This set includes a standard .def
-        # declarations for each present item of: output ports, events, "doDispatch", "getTime", and "cmdResponse_out".
+    def cpp_includes(self) -> List[str]:
+        """ Get the C++ includes for a component type
 
-        # First establish a set of functions whose presence is optional and based on the components properties
-        optional_functions = [("doDispatch", is_queued), ("dispatchAvailableMessages", is_queued),
-                              ("getTime", has_time_port), ("cmdResponse_out", has_commands)]
-        standard = [optional for optional, exists in optional_functions if exists]
-
-        # Add in the output ports, and events to the standard list
-        output_ports = component.get_ports(kind_filter="output", type_filter=GeneralPortInstance)
-        standard += [f"{DataHelper.get_unqualified_name(name)}_out" for name in output_ports] + \
-                    [f"isConnected_{DataHelper.get_unqualified_name(name)}_OutputPort" for name in output_ports] + \
-                    [component.event_to_dispatch_method(event) for event in component.events]
-        # Generate the .def lines for each standard method using the standard_def helper
-        definitions = [self.standard_def(method, component.cpp_fqn) for method in standard]
-
-        # Definitions should be augmented with the special declarations for parameters and telemetry channels as
-        # parameters use a helper function, and telemetry channels require a default argument for the time.
-        definitions += [
-            COMPONENT_PRM_TEMPLATE.format(name=DataHelper.get_unqualified_name(param), fqn=component.cpp_fqn)
-            for param in component.parameters
-        ] + [
-            COMPONENT_TLM_TEMPLATE.format(name=DataHelper.get_unqualified_name(channel), fqn=component.cpp_fqn)
-            for channel in component.channels
+        Alongside the standard includes this adds the component's own header, which is the header of the
+        implementation this autocoder generates rather than F Prime's autocoded component base header.
+        """
+        return super().cpp_includes() + [
+            self.include_manager.get_sibling_path(self.symbol, f"{self.name}.hpp")
         ]
 
-        # Indent and join the definitions into a single block, feed it into the template, and return the lines
-        definitions = "\n".join(self.indent(definitions)).strip()
-        return COMPONENT_TEMPLATE.format(
-            fqn=component.cpp_fqn,
-            unqualified_class_name=component.unqualified_name,
-            definitions=definitions,
-            STANDARD_INDENT=STANDARD_INDENT
-        ).splitlines()
-    
-    def get_cpp_includes(self, type_object, _):
-        """ Get the C++ includes for a component type
-        
-        This will get the standard includes and add in the component's own header file. This header file is the header
-        file of the fprime-python generated component implementation and not the base Ac component header.
-        """
-        base_ac_header = self.include_manager.get_include_path(self.get_annotated_node(type_object))
-        component_header =base_ac_header.replace("ComponentAc.hpp", ".hpp")
-        return super().get_cpp_includes(type_object, _) + [f'#include "{component_header}"']
 
-#### Component Implementation Generation Templates ####
-# These templates are used to generate the C++ implementation files that replace the standard hand-written
-# implementations and provide calls to/from the Python layer.
-####
+#: Attribute that exports the component class from the shared object it is compiled into, so that
+#: pybind11 can see its symbols in the object it loads
+VISIBILITY_ATTRIBUTE = '__attribute__((visibility("default")))'
 
+#: Docstring of the generated Python base class
+PYTHON_BASE_CLASS_DOCSTRING = '''""" Auto-coded base class for {name}
 
-# Template for the definition of a component's auto-generated "implementation" header file
-COMPONENT_DEFINITION_TEMPLATE = """
-// Auto-generated component implementation for {unqualified_name}
-#ifndef FPRIME_PYTHON_{unqualified_name_upper}_AC_HPP
-#define FPRIME_PYTHON_{unqualified_name_upper}_AC_HPP
-{include_block}
-{namespace_block}
-#endif // FPRIME_PYTHON_{unqualified_name_upper}_AC_HPP
-""".strip()
+    This base class is auto-generated to mirror the C++ component class. It delegates the methods to the
+    C++ implementation provided by the _init_ac function. The _init_ac function must be called first and
+    is done so by the auto-generated init function in the component C++.
 
-# Template for the auto-generated component "implementation" C++ file
-COMPONENT_IMPLEMENTATION_TEMPLATE = """
-// Auto-generated component implementation for {unqualified_name}
-{include_block}
-{namespace_block}
-""".strip()
+    This implies that a Python user cannot instantiate this class directly and must rely on the F Prime
+    topology to instantiate the component as all F Prime components are.
 
-# Component constructor template
-COMPONENT_CTOR_TEMPLATE = """
-{unqualified_name} ::{unqualified_name}(const char* name) : {unqualified_name}ComponentBase(name) {{}}
-""".strip()
+    Caution: This class relies on an absence of an __init__ method. We cannot guarantee that a derived
+        class will not define an __init__ method that fails to call super().__init__() and thus this
+        implementation must not rely on __init__ to be called. Instead this implementation relies on the
+        _init_ac method to be called by the C++ and converts use of the internal delegate before that
+        call to an Exception.
+    """'''
 
-# Component init function template. This function does some important work:
-# 1. Acquires the GIL for Python interaction as we are doing Python calls
-# 2. Imports the Python module for this component.
-# 3. Constructs the mirrored Python object found in the Python module and stores it in the C++ object's m_self member
-#    allowing for C++ to reference the paired Python object.
-# 4. Calls the auto-coded _init_ac function on the Python object that is provided by the autocode python base class
-#    allowing python to register the paired C++ "this" object.
-# 5. Continues with the standard F Prime initialization by calling the base class init function. 
-#
-# Note: GIL use is scoped to just the portions that require Python interaction.
-COMPONENT_INIT_TEMPLATE = """
-void {unqualified_name} ::init({depth_arg}FwEnumStoreType instance) {{
-{STANDARD_INDENT}// Acquire the GIL and import the Python module releasing the GIL before continuing with C++ init
-{STANDARD_INDENT}{{
-{STANDARD_INDENT}{STANDARD_INDENT}pybind11::gil_scoped_acquire acquired{{}};
-{STANDARD_INDENT}{STANDARD_INDENT}pybind11::module_ module = pybind11::module_::import("{unqualified_name}");
-{STANDARD_INDENT}{STANDARD_INDENT}// Construct the mirror Python object, storing it for C++ access
-{STANDARD_INDENT}{STANDARD_INDENT}this->m_self = module.attr("{unqualified_name}")();
-{STANDARD_INDENT}{STANDARD_INDENT}// Call auto-coded initialization function storing the C++ "this" object for Python
-{STANDARD_INDENT}{STANDARD_INDENT}this->m_self.attr("_init_ac")(this);
-{STANDARD_INDENT}}}
-{STANDARD_INDENT}// Continue the standard initialization of F Prime
-{STANDARD_INDENT}{unqualified_name}ComponentBase::init({depth_arg_name_with_comma}instance);
-}}
-""".strip()
+#: The Python base class that delegates to the C++ implementation. Delegation is done through
+#: __getattr__ and __setattr__ so that any attribute reaches the C++ implementation unless this class or
+#: the user's subclass defines it.
+PYTHON_BASE_CLASS_TEMPLATE = '''class {name}Base(object):
+    {docstring}
 
-# Component deinit function template. This function performs the dereferenceing of m_self to allow for a clean process
-# shutdown.
-COMPONENT_DEINIT_TEMPLATE = """
-void {unqualified_name} ::deinit() {{
-{STANDARD_INDENT}// Acquire the GIL and dereference the Python object
-{STANDARD_INDENT}{{
-{STANDARD_INDENT}{STANDARD_INDENT}pybind11::gil_scoped_acquire acquired{{}};
-{STANDARD_INDENT}{STANDARD_INDENT}this->m_self = pybind11::none();
-{STANDARD_INDENT}}}
-}}
-""".strip()
-
-# Template for component input port handler implementation including arguments
-COMPONENT_IN_PORT_DECLARATION_TEMPLATE = """
-{return_type} {class_qualifier}{port_name}_handler({port_arg_specification}){terminator}
-""".strip()
-
-# Template for component input port handler implementation. This template acquires the GIL in preparation for the call
-# into python, calls python, and casts the return value if necessary. GIL is released upon exit of the handler invocation.
-COMPONENT_IN_PORT_TEMPLATE = """
-{port_handler_declaration}
-{STANDARD_INDENT}pybind11::gil_scoped_acquire acquired{{}};
-{STANDARD_INDENT}pybind11::object return_value = m_self.attr("{port_name}_handler")({port_arg_names});
-{STANDARD_INDENT}{return_cast_block}
-}}
-""".strip()
-
-# Template for return value casting from pybind11 object to C++ type
-COMPONENT_RETURN_CAST_TEMPLATE = "return {py_object_name}.cast<{return_type}>();".strip()
-
-# Template for component command handler implementation including arguments
-COMPONENT_COMMAND_DECLARATION_TEMPLATE = """
-void {class_qualifier}{command_name}_cmdHandler({command_arg_specification}){terminator}
-""".strip()
-
-# Template for component command handler implementation. This template acquires the GIL in preparation for the call
-# into python and calls python. GIL is released upon exit of the handler invocation.
-COMPONENT_COMMAND_TEMPLATE = """
-{command_handler_declaration}
-{STANDARD_INDENT}pybind11::gil_scoped_acquire acquired{{}};
-{STANDARD_INDENT}m_self.attr("{command_name}_cmdHandler")({command_arg_names});
-}}
-""".strip()
-
-# Template for component parameter get helper implementation. Since parameters return both a value and a status we need
-# to call a helper function that returns both as a tuple because the C++ style in/out parameters do not map cleanly to
-# Python return values.
-COMPONENT_PARAMETER_DECLARATION_TEMPLATE = """
-std::tuple<{parameter_type}, Fw::ParamValid> {class_qualifier}paramGet_{parameter_name}_helper(){terminator}
-""".strip()
-
-# Template for component parameter get helper implementation. This template reads the parameter value using the standard
-# F Prime call, and then returns both the value and status as a tuple to Python. This is done to avoid in/out parameter
-# patterns that do not map cleanly to Python.
-COMPONENT_PARAMETER_TEMPLATE = """
-{parameter_helper_declaration}
-{STANDARD_INDENT}Fw::ParamValid _status_;
-{STANDARD_INDENT}{parameter_type} _value_ = this->paramGet_{parameter_name}(_status_);
-{STANDARD_INDENT}return std::make_tuple(_value_, _status_);
-}}
-""".strip()
-
-# Template for using statement for base class member
-COMPONENT_USING_TEMPLATE = "using {unqualified_name}ComponentBase::{member_name};"
-
-# Template for the full component class definition in the header file. This includes the constructor, init function,
-# deleted copy constructor, default destructor, port handler declarations, command handler declarations, parameter
-# get functions, and using statements for base class members.
-#
-# Importantly it defines the m_self member that holds the mirrored Python object allowing C++ to call into Python.
-COMPONENT_CLASS_TEMPLATE = """
-class __attribute__((visibility("default"))) {unqualified_name} : public {unqualified_name}ComponentBase {{
-  public:
-{STANDARD_INDENT}{unqualified_name}(const char* name);
-{STANDARD_INDENT}{unqualified_name}(const {unqualified_name}&) = delete;
-{STANDARD_INDENT}~{unqualified_name}() = default;
-{STANDARD_INDENT}void init({depth_arg}const FwEnumStoreType instance);
-{STANDARD_INDENT}void deinit();
-  public:
-{port_handler_declarations}
-{command_handler_declarations}
-{parameter_helper_declarations}
-  public:
-{using_statements}
-  public:
-{STANDARD_INDENT}pybind11::object m_self;
-}};
-""".strip()
-
-
-#### Python Component Implementation Templates ####
-# These templates are used to generate the Python implementation templates that replace the standard implementation
-# templates and can be filled in by the user.
-####
-
-# Template for the basic component Python implementation file. This template includes the necessary imports, class
-# skeleton, and method stubs for port handlers and command handlers.
-COMPONENT_PYTHON_IMPLEMENTATION_TEMPLATE = """
-\"\"\" {unqualified_name} Python component implementation
-
-This is the Python implementation for the {unqualified_name} component. This class extends the auto-coded python base
-class {unqualified_name}Base that provides the necessary plumbing to connect to the C++ stub connected to the rest of
-the F Prime topology.
-\"\"\"
-import fprime_py
-from {unqualified_name}BaseAc import {unqualified_name}Base
-
-
-class {unqualified_name}({unqualified_name}Base):
-    \"\"\" Python implementation for the {unqualified_name} component \"\"\"
-    {port_handler_functions}
-    {command_handler_functions}
-""".strip()
-
-# Template for component port handler function stub
-COMPONENT_PORT_HANDLER_PYTHON_TEMPLATE = """
-    def {port_name}_handler(self, {port_arg_names}):
-        \"\"\" Handle the {port_name} port \"\"\"
-        # TODO: Implement port handler
-        pass
-""".strip()
-
-# Template for component command handler function stub
-COMPONENT_COMMAND_HANDLER_PYTHON_TEMPLATE = """
-    def {command_name}_cmdHandler(self, {command_arg_names}):
-        \"\"\" Handle the {command_name} command \"\"\"
-        # TODO: Implement command handler
-        self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.OK))
-""".strip()
-
-# Template for the Python component base class that provides delegation to the C++ implementation and the _init_ac
-# method that stores a pointer to the C++ object. Delegation is done via __getattr__ and __setattr__ methods such that
-# any attribute will be delegated to the C++ implementation unless it is the "this" attribute itself.
-PYTHON_CLASS_TEMPLATE = '''
-class {unqualified_name}Base(object):
-    """ Auto-coded base class for {unqualified_name}
-    
-    This base class is auto-generated to mirror the C++ component class. It delegates the methods to the C++
-    implementation provided by the _init_ac function. The __init_ac function must be called first and is done so by the
-    auto-generated init function in the component C++.
-
-    This implies that a Python user cannot instantiate this class directly and must rely on the F Prime topology to
-    instantiate the component as all F Prime components are.
-
-    Caution: This class relies on an absence of an __init__ method. We cannot guarantee that a derived class will not
-        define an __init__ method that fails to call super().__init__() and thus this implementation must not rely on
-        __init__ to be called. Instead this implementation relies on the _init_ac method to be called by the C++
-        and converts use of the internal delegate before that call to an Exception.
-    """
     def _init_ac(self, this):
         """ Initialize 'this' object to redirect into the C++ implementation
-        
-        In order to automatically bind to the C++ implementation, a pointer to the C++ object must be stored and
-        within this class. This method *must* be called before any Python calls are made.
+
+        In order to automatically bind to the C++ implementation, a pointer to the C++ object must be
+        stored within this class. This method *must* be called before any Python calls are made.
         """
         self.this = this
 
     def __getattr__(self, name):
         """ Delegate attribute read access to the C++ implementation
-        
-        This method provides automatic delegation to the C++ implementation for any attribute that are not found within
-        this implementation. 
+
+        This method provides automatic delegation to the C++ implementation for any attribute that is not
+        found within this implementation.
 
         Args:
             name: The name of the attribute to access
         Returns:
             The value of the attribute from the C++ implementation
         """
-        # Prevent infinite recursion if looking for 'this' before it is initialized. If "this" was set in _init_ac,
-        # then this fallback method would not have been called. If the name is "this", then _init_ac was not called and
-        # therefore this attributed cannot be accessed.
+        # Prevent infinite recursion if looking for 'this' before it is initialized. If "this" was set in
+        # _init_ac, then this fallback method would not have been called. If the name is "this", then
+        # _init_ac was not called and therefore this attribute cannot be accessed.
         if name == "this":
             raise AttributeError("'this' not initialized. Call _init_ac first.")
         elif not hasattr(self, "this"):
-            raise Exception("{unqualified_name} cannot be instantiated directly. It must be instantiated by F Prime")
+            raise Exception(
+                "{name} cannot be instantiated directly. It must be instantiated by F Prime"
+            )
         return getattr(self.this, name)
 
-        
     def __setattr__(self, name, value):
         """ Delegate attribute write access to the C++ implementation
-        
-        This method provides automatic delegation to the C++ implementation for any attribute that are not found within
-        this implementation. First, it this method attempts to set the attribute in the C++ implementation. If that
-        fails the attribute is set in this (Python) implementation.
+
+        This method provides automatic delegation to the C++ implementation for any attribute that is not
+        found within this implementation. First, this method attempts to set the attribute in the C++
+        implementation. If that fails the attribute is set in this (Python) implementation.
 
         Args:
             name: The name of the attribute to set
@@ -357,283 +179,334 @@ class {unqualified_name}Base(object):
             super().__setattr__(name, value)
 '''
 
-def fix_arguments(cpp_type: str, is_command: bool) -> str:
-    """ Fix argument types for calls
+#: The Python implementation template a user renames and fills in
+PYTHON_IMPLEMENTATION_TEMPLATE = '''""" {name} Python component implementation
 
-    Strings must be select their type by the usage. Commands use CmdStringArg while ports use StringBase. This
-    function selects between the two.
+This is the Python implementation for the {name} component. This class extends the auto-coded Python base
+class {name}Base that provides the necessary plumbing to connect to the C++ stub connected to the rest of
+the F Prime topology.
+"""
+import fprime_py
+from {name}BaseAc import {name}Base
 
-    Additionally, this patches a bug where the FPP generated arguments are passed-by-value, and thus need to have
-    const and & striped from them.
 
-    Args:
-        cpp_type: The C++ type string of the argument (or --string-- for strings)
-        is_command: Whether this argument is for a command (True) or not (False)
-    Returns:
-        The fixed C++ type string for use in argument lists
+class {name}({name}Base):
+    """ Python implementation for the {name} component """
+{handlers}'''
+
+#: Stub for one port handler in the Python implementation template
+PYTHON_PORT_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
+        """ Handle the {name} {kind} """
+        # TODO: Implement {kind} handler{return_note}
+        pass
+'''
+
+#: Stub for one command handler in the Python implementation template
+PYTHON_COMMAND_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
+        """ Handle the {name} command """
+        # TODO: Implement command handler
+        self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.OK))
+'''
+
+
+class ComponentImplementationGenerator(object):
+    """ Generator for the Python/C++ component implementation files
+
+    This generator creates the C++ implementation that connects the F Prime topology to the Python layer:
+    a class deriving from F Prime's autocoded component base whose port, command and parameter members
+    forward into a mirrored Python object.
+
+    Alongside it, this generator creates the Python base class that provides delegation back to the C++
+    implementation, and the Python implementation template that provides the skeleton for user code.
     """
-    if "string" in cpp_type and is_command:
-        return "const Fw::CmdStringArg&"
-    if "string" in cpp_type:
-        return "const Fw::StringBase&"
-    if is_command and cpp_type.startswith("const ") and cpp_type.endswith("&"):
-        return cpp_type[len("const "):-len("&")]
-    return cpp_type
 
-
-def get_param_specification(param_list: List[FormalParameterDataHelper], is_command: bool=False) -> str:
-    """ Get the parameter specification string for a list of formal parameters
-    
-    This is a helper function that generates the C++ argument specification string for a list of formal parameters.
-    This includes the type and name of each parameter, separated by commas.
-
-    Args:
-        param_list: list of formal parameters where each element is has attributes .cpp_type and .name
-        is_command: Whether these parameters are for a command (True) or not (False)
-    Returns:
-        The C++ argument specification string
-    """
-    argument_spec = ", ".join(f"{fix_arguments(param.cpp_type, is_command)} {param.name}" for param in param_list)
-    return argument_spec
-
-
-class ComponentImplementationGenerator(CodeGenerator):
-    """ Generator for Python/C++ component implementation files
-
-    This generator creates the C++ implementation files that connect the F Prime component topology to the Python
-    layer. This includes the necessary port handler implementations, command handler implementations, and parameter
-    get helper implementations.
-
-    Additionally, this generator creates the Python base class that provides delegation to the C++ implementation and
-    the Python implementation template that provides the skeleton for user code.
-    """
-    def get_cpp_lines(self, component: Component, in_: In) -> List[str]:
-        """ Generate the lines for the C++ implementation file for a component type
-
-        Get the lines of a component's implementation. This will be used for the auto-generated component C++
-        implementation which connects the F Prime topology (via component base) to the Python layer.
+    def __init__(
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, component: fpp.Component
+    ) -> None:
+        """ Initialize the generator for one component
 
         Args:
-            component: The component type to generate the implementation for
-            in_: The input analysis context
-        Returns:
-            The lines of the component's C++ implementation file
+            include_manager: Resolves the include paths of the headers the implementation needs
+            symbol: The symbol of the component being implemented
+            component: The analyzed component being implemented
         """
-        analysis, *_ = in_
-        component = ComponentDataHelper(component, analysis)
+        self.include_manager = include_manager
+        self.symbol = symbol
+        self.component = ComponentView(component)
 
-        # Start with the constructor and init function
-        lines = COMPONENT_CTOR_TEMPLATE.format(unqualified_name=component.unqualified_name).splitlines()
-        lines += COMPONENT_INIT_TEMPLATE.format(
-            unqualified_name=component.unqualified_name,
-            depth_arg="const FwSizeType queueDepth, " if component.kind != "passive" else "",
-            depth_arg_name_with_comma="queueDepth, " if component.kind != "passive" else "",
-            STANDARD_INDENT=STANDARD_INDENT
-        ).splitlines()
-        lines += COMPONENT_DEINIT_TEMPLATE.format(
-            unqualified_name=component.unqualified_name,
-            STANDARD_INDENT=STANDARD_INDENT
-        ).splitlines()
-        # Now add in a port template for each port 
-        lines += [
-            # Port invocation with sub-templates for declaration and return casting
-            COMPONENT_IN_PORT_TEMPLATE.format(
-                # Port handler declaration with arguments
-                port_handler_declaration=COMPONENT_IN_PORT_DECLARATION_TEMPLATE.format(
-                    return_type=port.return_type.cpp_type,
-                    class_qualifier=f"{component.unqualified_name} ::",
-                    port_name=port.unqualified_name,
-                    port_arg_specification=get_param_specification([fake_param("FwIndexType", "portNum")] +list(port.parameters)),
-                    terminator=" {",
-                ),
-                port_name=port.unqualified_name,
-                port_arg_names=", ".join(["portNum"] + [param.name for param in port.parameters]),
-                STANDARD_INDENT=STANDARD_INDENT,
-                return_cast_block=COMPONENT_RETURN_CAST_TEMPLATE.format(
-                    py_object_name="return_value",
-                    return_type=port.return_type.cpp_type
-                ) if port.return_type.cpp_type != "void" else ""
+    @property
+    def name(self) -> str:
+        """ The component's unqualified name """
+        return self.component.name
+
+    def _init_params(self) -> List[Tuple[str, str, str]]:
+        """ The parameters of the generated init function
+
+        A component with a message queue takes its depth, matching the base class it forwards to.
+        """
+        params = [("FwEnumStoreType", "instance", "The instance number")]
+        if self.component.has_queue:
+            return [("FwSizeType", "queueDepth", "The queue depth")] + params
+        return params
+
+    def _write_init(self, body: Body) -> None:
+        """ Write the body of the generated init function
+
+        The Python module for the component is imported and its mirror object constructed, then the
+        object is handed the C++ `this` pointer so that calls can travel back the other way. Only that
+        part needs the interpreter, so the GIL is held for it alone and released before F Prime's own
+        initialization runs.
+        """
+        body.comment(
+            "Acquire the GIL and import the Python module releasing the GIL before continuing with"
+            " C++ init"
+        )
+        with body.block():
+            body.line("pybind11::gil_scoped_acquire acquired{};")
+            body.line(f'pybind11::module_ module = pybind11::module_::import("{self.name}");')
+            body.comment("Construct the mirror Python object, storing it for C++ access")
+            body.line(f'this->{SELF_MEMBER} = module.attr("{self.name}")();')
+            body.comment(
+                'Call auto-coded initialization function storing the C++ "this" object for Python'
             )
-            for port in component.get_ports(kind_filter="input", type_filter=GeneralPortInstance)
-        ]
-        # Now add in a command handler for each command
-        lines += [
-            COMPONENT_COMMAND_TEMPLATE.format(
-                command_handler_declaration=COMPONENT_COMMAND_DECLARATION_TEMPLATE.format(
-                    class_qualifier=f"{component.unqualified_name} ::",
-                    command_name=command.unqualified_name,
-                    command_arg_specification=get_param_specification([fake_param("FwOpcodeType", "opCode"), fake_param("U32", "cmdSeq")] + list(command.parameters), True),
-                    terminator=" {"
-                ),
-                command_name=command.unqualified_name,
-                command_arg_names=", ".join(["opCode", "cmdSeq"] + [param.name for param in command.parameters]),
-                STANDARD_INDENT=STANDARD_INDENT
-            )
-            for command in component.commands
-        ]
-        # Now add in a parameter get helper for each parameter
-        lines += [
-            COMPONENT_PARAMETER_TEMPLATE.format(
-                parameter_helper_declaration=COMPONENT_PARAMETER_DECLARATION_TEMPLATE.format(
-                    class_qualifier=f"{component.unqualified_name} ::",
-                    parameter_name=param.unqualified_name,
-                    parameter_type=param.type.cpp_type,
-                    terminator=" {"
-                ),
-                parameter_name=param.unqualified_name,
-                parameter_type=param.type.cpp_type,
-                STANDARD_INDENT=STANDARD_INDENT
-            )
-            for param in component.parameters
-        ]
-        # Calculate the namespaces for this component
-        namespaces = component.cpp_fqn.split("::")[:-1]
-        class_header = Path(self.include_manager.get_include_path(self.get_annotated_node(component))).parent / f"{component.unqualified_name}.hpp"
-        includes = [f"#include \"{class_header.as_posix()}\""]
-        component_hpp_lines = COMPONENT_IMPLEMENTATION_TEMPLATE.format(
-            unqualified_name=component.unqualified_name,
-            include_block="\n".join(includes),
-            namespace_block="\n".join(namespace_recurse(namespaces, lines)),
-        ).splitlines()
-        return component_hpp_lines
+            body.line(f'this->{SELF_MEMBER}.attr("_init_ac")(this);')
+        body.comment("Continue the standard initialization of F Prime")
+        arguments = ", ".join(name for _, name, _ in self._init_params())
+        body.line(f"{self.component.base_class}::init({arguments});")
 
+    def _write_deinit(self, body: Body) -> None:
+        """ Write the body of the generated deinit function
 
-    def get_hpp_lines(self, component: Component, in_: In) -> List[str]:
-        """ Generate the lines for the C++ implementation file for a component type
+        Dropping the reference to the mirror object lets the interpreter shut down cleanly. The base class
+        is then given its own teardown -- a queued or active component returns its message queue there --
+        so that `deinit` undoes what `init` did rather than only the Python half of it.
+        """
+        body.comment("Acquire the GIL and dereference the Python object")
+        with body.block():
+            body.line("pybind11::gil_scoped_acquire acquired{};")
+            body.line(f"this->{SELF_MEMBER} = pybind11::none();")
+        body.comment("Continue the standard teardown of F Prime")
+        body.line(f"{self.component.base_class}::deinit();")
 
-        Get the lines of a component's implementation header. This will be used for the auto-generated component C++
-        implementation header which declares the necessary port handler implementations, command handler
-        implementations etc.
+    def _write_forwarding_call(self, body: Body, handler: HandlerView) -> None:
+        """ Write a handler body that forwards the call into the mirrored Python object
 
         Args:
-            component: The component type to generate the implementation for
-            in_: The input analysis context
-        Returns:
-            The lines of the component's C++ implementation header file        
+            body: The function body to write into
+            handler: The component member whose handler is being written
         """
-        analysis, *_ = in_
-        component = ComponentDataHelper(component, analysis)
+        body.line("pybind11::gil_scoped_acquire acquired{};")
+        arguments = ", ".join(handler.handler_arguments)
+        call = f'{SELF_MEMBER}.attr("{handler.handler_name}")({arguments})'
+        if handler.handler_return_type == "void":
+            body.line(f"{call};")
+            return
+        body.line(f"pybind11::object return_value = {call};")
+        body.line(f"return return_value.cast<{handler.handler_return_type}>();")
 
-        port_handler_declarations = [
-            COMPONENT_IN_PORT_DECLARATION_TEMPLATE.format(
-                return_type=port.return_type.cpp_type,
-                class_qualifier=f"",
-                port_name=port.unqualified_name,
-                port_arg_specification=get_param_specification([SimpleNamespace(cpp_type="FwIndexType", name="portNum")] +list(port.parameters)),
-                terminator=";"
-            )
-            for port in component.get_ports(kind_filter="input", type_filter=GeneralPortInstance)
-        ]
-        command_handler_declarations = [
-            COMPONENT_COMMAND_DECLARATION_TEMPLATE.format(
-                class_qualifier=f"",
-                command_name=command.unqualified_name,
-                command_arg_specification=get_param_specification([fake_param("FwOpcodeType", "opCode"), fake_param("U32", "cmdSeq")] + list(command.parameters), True),
-                terminator=";"
-            )
-            for command in component.commands
-        ]
-        parameter_helper = [
-            COMPONENT_PARAMETER_DECLARATION_TEMPLATE.format(
-                class_qualifier=f"",
-                parameter_name=param.unqualified_name,
-                parameter_type=param.type.cpp_type,
-                terminator=";"
-            )
-            for param in component.parameters
-        ]
-
-        has_time_port = bool(component.get_ports(kind_filter="time get"))
-        has_commands = bool(component.commands)
-        is_queued = component.kind == "queued"
-
-        # First establish a set of functions whose presence is optional and based on the components properties
-        optional_functions = [("doDispatch", is_queued), ("dispatchAvailableMessages", is_queued),
-                              ("getTime", has_time_port), ("cmdResponse_out", has_commands)]
-        standard = [optional for optional, exists in optional_functions if exists]
-
-        # Add in the output ports, and events
-        output_ports = component.get_ports(kind_filter="output", type_filter=GeneralPortInstance)
-        standard += [f"{DataHelper.get_unqualified_name(name)}_out" for name in output_ports] + \
-                    [f"isConnected_{DataHelper.get_unqualified_name(name)}_OutputPort" for name in output_ports] + \
-                    [component.event_to_dispatch_method(event) for event in component.events] + \
-                    [f"tlmWrite_{DataHelper.get_unqualified_name(channel)}" for channel in component.channels]
-        using_statements = [COMPONENT_USING_TEMPLATE.format(unqualified_name=component.unqualified_name, member_name=method) for method in standard]
-
-        lines = COMPONENT_CLASS_TEMPLATE.format(
-            unqualified_name=component.unqualified_name,
-            depth_arg="const FwSizeType queueDepth, " if component.kind != "passive" else "",
-            port_handler_declarations="\n".join(self.indent(port_handler_declarations)),
-            command_handler_declarations="\n".join(self.indent(command_handler_declarations)),
-            parameter_helper_declarations="\n".join(self.indent(parameter_helper)),
-            using_statements="\n".join(self.indent(using_statements)),
-            STANDARD_INDENT=STANDARD_INDENT
-        ).splitlines()
-
-
-        namespaces = component.cpp_fqn.split("::")[:-1]
-        base_class_header = Path(self.include_manager.get_include_path(self.get_annotated_node(component))).parent / f"{component.unqualified_name}ComponentAc.hpp"
-        includes = [f"#include \"{base_class_header.as_posix()}\""] + ["#include \"FprimePython/FprimePython.hpp\""]
-        component_hpp_lines = COMPONENT_DEFINITION_TEMPLATE.format(
-            unqualified_name=component.unqualified_name,
-            include_block="\n".join(includes),
-            namespace_block="\n".join(namespace_recurse(namespaces, lines)),
-            unqualified_name_upper=component.unqualified_name.upper()
-        ).splitlines()
-        return component_hpp_lines
-
-    def get_python_base_lines(self, component: Component, in_: In) -> List[str]:
-        """ Generate the lines for Python base-class lines
-                
-        This method generates the lines for the Python base class that will be inherited by the user-defined Python
-        implementation. It represents the mirror of the C++ generation.
+    def _write_lifecycle(self, cls: ClassBuilder) -> None:
+        """ Declare and define the component's construction, initialization and destruction
 
         Args:
-            component: The component type to generate the base class for
-            in_: The input analysis context
-        Returns:
-            The lines of the component's Python base class file
+            cls: The class builder to add the members to
         """
-        analysis, *_ = in_
-        component = ComponentDataHelper(component, analysis)
-        return PYTHON_CLASS_TEMPLATE.format(
-            unqualified_name=component.unqualified_name
-        ).splitlines()
+        component = self.component
+        with cls.public("Construction, initialization, and destruction"):
+            constructor = cls.constructor(
+                params=[("const char*", "name", "The component name")],
+                comment=f"Construct {self.name} object",
+                # Nothing is constructed beyond what the base class does, and the document is strict, so
+                # the empty body has to be declared rather than merely left unwritten
+                body="",
+            )
+            constructor.init(f"{component.base_class}(name)")
+            # The mirror object is owned by exactly one C++ object, so copying is not meaningful
+            cls.constructor(
+                params=[(f"const {self.name}&", "other")],
+                deleted=True,
+                comment=f"Copy construction of {self.name} is not supported",
+            )
+            cls.destructor(defaulted=True, comment=f"Destroy {self.name} object")
+            init = cls.function(
+                "init",
+                params=self._init_params(),
+                comment=f"Initialize {self.name} object and its mirrored Python object",
+            )
+            self._write_init(init.body)
+            deinit = cls.function(
+                "deinit",
+                override=True,
+                comment="Release the mirrored Python object",
+            )
+            self._write_deinit(deinit.body)
 
-    def get_python_implementation_lines(self, component: Component, in_: In) -> List[str]:
-        """ Generate the lines for Python implementation file for a component type
+    def _write_handlers(self, cls: ClassBuilder) -> None:
+        """ Declare and define one forwarding override per handler F Prime declares
 
-        This method generates the lines for the Python implementation template that provides the skeleton for user code
-        for the component. This includes the port handler stubs and command handler stubs.
-        
         Args:
-            component: The component type to generate the implementation for
-            in_: The input analysis context
-        Returns:
-            The lines of the component's Python implementation file
+            cls: The class builder to add the handlers to
         """
-        analysis, *_ = in_
-        component = ComponentDataHelper(component, analysis)
+        with cls.public("Handlers forwarded to Python"):
+            for handler in self.component.handlers:
+                override = cls.function(
+                    handler.handler_name,
+                    ret=handler.handler_return_type,
+                    params=handler.handler_parameters,
+                    override=True,
+                    comment=f"Handler for {handler.HANDLER_KIND} {handler.name}",
+                )
+                self._write_forwarding_call(override.body, handler)
 
-        port_handler_functions = f"\n{STANDARD_INDENT}".join([
-            COMPONENT_PORT_HANDLER_PYTHON_TEMPLATE.format(
-                port_name=port.unqualified_name,
-                port_arg_names=", ".join(["portNum"] + [param.name for param in port.parameters])
+    def _write_exposed_members(self, cls: ClassBuilder) -> None:
+        """ Re-expose the base class members Python needs, and declare the mirror object
+
+        F Prime declares the methods a Python implementation calls on itself `protected`, so they are
+        pulled into public scope for the bindings to take their addresses.
+
+        Args:
+            cls: The class builder to add the members to
+        """
+        component = self.component
+        using_statements = base_class_methods(component) + [
+            channel.write_name for channel in component.channels
+        ]
+        if using_statements:
+            with cls.public("Base class members exposed to Python"):
+                # The method names come from the model, so this is not margin-stripped
+                cls.lines(
+                    "\n".join(
+                        f"using {component.base_class}::{method};"
+                        for method in using_statements
+                    ),
+                    margin=None,
+                )
+
+        with cls.public("Member variables"):
+            cls.var(
+                "pybind11::object",
+                SELF_MEMBER,
+                comment="The mirrored Python object this component forwards into",
             )
-            for port in component.get_ports(kind_filter="input", type_filter=GeneralPortInstance)
-        ])
 
-        command_handler_functions = f"\n{STANDARD_INDENT}".join([
-            COMPONENT_COMMAND_HANDLER_PYTHON_TEMPLATE.format(
-                command_name=command.unqualified_name,
-                command_arg_names=", ".join(["opCode", "cmdSeq"] + [param.name for param in command.parameters])
+    def document(self) -> CppDocBuilder:
+        """ Build the C++ document holding the implementation's header and source
+
+        Returns:
+            The document, with the component class declared and defined
+        """
+        component = self.component
+        doc = CppDocBuilder(
+            self.name,
+            description=f"{self.name} Python component implementation",
+            include_guard=f"FPRIME_PYTHON_{self.name.upper()}_AC_HPP",
+            tool_name=TOOL_NAME,
+            # Every handler this generator declares has to forward into Python; one left unfilled would
+            # otherwise render as an empty override that silently swallows the call
+            strict=True,
+        )
+        doc.include(
+            self.include_manager.get_include_path(self.symbol),
+            SUPPORT_HEADER,
+        )
+        if component.parameters:
+            # std::tuple, returned by the parameter helpers
+            doc.system_include("tuple")
+        doc.include(
+            self.include_manager.get_sibling_path(self.symbol, f"{self.name}.hpp"),
+            output=Output.CPP,
+        )
+
+        namespace = doc.namespace(*component.namespaces) if component.namespaces else doc
+        with namespace.class_(
+            self.name,
+            extends=f"public {component.base_class}",
+            comment=f"Python implementation of the {component.fpp_name} component",
+            attributes=VISIBILITY_ATTRIBUTE,
+        ) as cls:
+            self._write_lifecycle(cls)
+            self._write_handlers(cls)
+            if component.parameters:
+                with cls.public("Parameter helpers"):
+                    for param in component.parameters:
+                        self._write_parameter_helper(cls, param)
+            self._write_exposed_members(cls)
+        return doc
+
+    def _write_parameter_helper(self, cls: ClassBuilder, param: ParameterView) -> None:
+        """ Declare and define the helper that reads one parameter
+
+        F Prime's parameter getter reports validity through an out parameter, which does not map onto a
+        Python return value, so the helper returns the value and the status together as a tuple.
+
+        Args:
+            cls: The class builder to add the helper to
+            param: The parameter to generate the helper for
+        """
+        helper = cls.function(
+            param.helper_name,
+            ret=f"std::tuple<{param.cpp_type}, Fw::ParamValid>",
+            comment=f"Read parameter {param.name} and its validity together",
+        )
+        with helper.body as body:
+            body.line("Fw::ParamValid _status_;")
+            body.line(f"{param.cpp_type} _value_ = this->{param.getter_name}(_status_);")
+            body.line("return std::make_tuple(_value_, _status_);")
+
+    def python_base_class(self) -> str:
+        """ Generate the Python base class the user's implementation inherits from
+
+        Returns:
+            The contents of the generated Python base class file
+        """
+        return PYTHON_BASE_CLASS_TEMPLATE.format(
+            name=self.name,
+            docstring=PYTHON_BASE_CLASS_DOCSTRING.format(name=self.name),
+        )
+
+    def python_implementation(self) -> str:
+        """ Generate the Python implementation template for the user to fill in
+
+        Returns:
+            The contents of the generated Python implementation template file
+        """
+        stubs = []
+        for handler in self.component.handlers:
+            args = "".join(f", {name}" for name in handler.handler_arguments)
+            # A command handler is not left to fall off the end: the ground waits for a response, so the
+            # stub sends one
+            if isinstance(handler, CommandView):
+                stubs.append(
+                    PYTHON_COMMAND_HANDLER_TEMPLATE.format(
+                        handler=handler.handler_name, name=handler.name, args=args
+                    )
+                )
+                continue
+            return_type = handler.handler_return_type
+            stubs.append(
+                PYTHON_PORT_HANDLER_TEMPLATE.format(
+                    handler=handler.handler_name,
+                    name=handler.name,
+                    kind=handler.HANDLER_KIND,
+                    args=args,
+                    # A port that returns a value cannot be left returning None: the C++ side casts what
+                    # comes back to the port's return type and raises if it cannot
+                    return_note=(
+                        "" if return_type == "void" else f", returning a {return_type}"
+                    ),
+                )
             )
-            for command in component.commands
-        ])
+        return PYTHON_IMPLEMENTATION_TEMPLATE.format(
+            name=self.name, handlers="\n".join(stubs)
+        )
 
-        return COMPONENT_PYTHON_IMPLEMENTATION_TEMPLATE.format(
-            unqualified_name=component.unqualified_name,
-            port_handler_functions=port_handler_functions,
-            command_handler_functions=command_handler_functions
-        ).splitlines()
+    def files(self) -> Dict[str, str]:
+        """ Generate the component implementation's files
 
+        Returns:
+            A mapping of file name to file contents
+        """
+        return {
+            **self.document().files(),
+            f"{self.name}BaseAc.py": self.python_base_class(),
+            f"{self.name}.template.py": self.python_implementation(),
+        }

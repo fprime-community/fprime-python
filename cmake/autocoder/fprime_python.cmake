@@ -2,12 +2,30 @@
 # autocoder/fprime_python.cmake:
 #
 # CMake implementation of an fprime autocoder used to generate Python bindings for components, types, etc. This
-# autocoder uses the same autocoding criteria that the FPP autocoder uses, however; it assumes that the
-# fprime-python-model compatible output has been generated in the build cache.
+# autocoder uses the same autocoding criteria that the FPP autocoder uses. It reads the FPP model directly:
+# the module's own translation units, plus the transitive FPP closure that `fpp-depend` leaves in the module's
+# build cache. Nothing else has to be generated first.
 ####
 include_guard()
 include(utilities)
 include(autocoder/helpers)
+
+####
+# Function `fprime_python_get_model_files`:
+#
+# Reads the transitive FPP closure of the current module out of the build cache. `fpp-depend` writes it during
+# the sub-build that runs before any autocoder, so it is always available here. The closure is what the
+# autocoder analyzes alongside the module's own translation units, and so is also what the generated files
+# depend on.
+#
+# Sets FPRIME_PYTHON_MODEL_FILES in the caller's scope.
+####
+function(fprime_python_get_model_files)
+    set(IMPORT_LIST_FILE "${CMAKE_CURRENT_BINARY_DIR}/fpp-cache/stdout.txt")
+    fprime_cmake_ASSERT("fpp-depend cache did not generate '${IMPORT_LIST_FILE}'" EXISTS "${IMPORT_LIST_FILE}")
+    file(STRINGS "${IMPORT_LIST_FILE}" MODEL_FILES)
+    set(FPRIME_PYTHON_MODEL_FILES "${MODEL_FILES}" PARENT_SCOPE)
+endfunction(fprime_python_get_model_files)
 
 # Invoke the autocoder once for each module containing FPP files.
 autocoder_setup_for_multiple_sources()
@@ -74,9 +92,12 @@ function(fprime_python_setup_autocode MODULE_NAME AC_INPUT_FILES)
         append_list_property("${GENERATED_JSON_FILES}" TARGET "${MODULE_NAME}" PROPERTY FPRIME_PYTHON_GENERATED_JSON_FILES)
         append_list_property("${GENERATED_PY_FILES}" TARGET "${MODULE_NAME}" PROPERTY FPRIME_PYTHON_GENERATED_PY_FILES)
 
+        # Regenerate when anything in the model changes, not just this module's own translation units: a
+        # bound component's ports, commands and types may all be defined elsewhere.
+        fprime_python_get_model_files()
         add_custom_command(
             OUTPUT ${GENERATED_HPP_FILES} ${GENERATED_CPP_FILES} ${GENERATED_JSON_FILES} ${GENERATED_PY_FILES}
-            DEPENDS ${AC_INPUT_FILES}
+            DEPENDS ${AC_INPUT_FILES} ${FPRIME_PYTHON_MODEL_FILES}
             COMMAND "${FPRIME_PYTHON_AC}"
                 "bindings"
                 "${CMAKE_CURRENT_BINARY_DIR}"
