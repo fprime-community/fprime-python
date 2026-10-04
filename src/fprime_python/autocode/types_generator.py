@@ -403,8 +403,8 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
         the field types and reference qualifiers need to be determined. This will determine these properties based on
         the field type.
 
-        Warning: this function does not support inlined arrays as struct members because python does not support 
-            fixed-sized basic array types. Passing these in will result in a non-array type.
+        Note: inlined-array members (C arrays in the autocoded C++) do not go through this function; they are bound by
+            value using the inline-array templates instead.
 
         Args:
             name: name of the field (member) for the getter/setter
@@ -438,8 +438,8 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
         ambiguity when referring to a getter method for the purposes of binding. To resolve this, a static cast to the
         exact method type is required.
 
-        Warning: this function does not support inlined arrays as struct members because python does not support 
-            fixed-sized basic array types. Passing these in will result in a non-array type.
+        Note: inlined-array members (C arrays in the autocoded C++) do not go through this function; they are bound by
+            value using the inline-array templates instead.
         
         Args:
             name: name of the field (member) for the getter
