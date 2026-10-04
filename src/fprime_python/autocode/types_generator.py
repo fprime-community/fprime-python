@@ -204,27 +204,33 @@ STRUCT_GETTER_SETTER_TEMPLATE = """
 
 # Struct members that are inlined arrays (e.g. `rgb: [768] U8`) are C arrays in the autocoded C++ and have no Python
 # equivalent. They are bound by value: the getter copies the elements into a list and the setter copies the elements
-# of any sequence of the right length (a list, tuple, bytes, ...) into the array.
+# of any sequence of the right length (a list, tuple, bytes, ...) into the array. Elements cross the boundary the same
+# way scalar members of the same type do: strings as `str`, enumerations as the `T` enumeration.
 STRUCT_INLINE_ARRAY_GETTER_TEMPLATE = """[](const {fqn}& self) {{
     pybind11::list items;
     for (const auto& item : self.get_{name}()) {{
-        items.append(pybind11::cast(item));
+        items.append({element_to_python});
     }}
     return items;
 }}"""
 STRUCT_INLINE_ARRAY_SETTER_TEMPLATE = """[]({fqn}& self, const pybind11::sequence& items) {{
-    using Element = std::remove_extent<{fqn}::Type_of_{name}>::type;
-    constexpr FwSizeType size = std::extent<{fqn}::Type_of_{name}>::value;
+    constexpr std::size_t size = std::extent<{fqn}::Type_of_{name}>::value;
     if (pybind11::len(items) != size) {{
         throw pybind11::value_error("{name} requires exactly " + std::to_string(size) + " elements");
     }}
     // Convert every element before writing so a failed conversion leaves the member unchanged
-    std::vector<Element> converted;
+    std::vector<{element_cpp_type}> converted;
     converted.reserve(size);
-    for (const auto& item : items) {{
-        converted.push_back(item.cast<Element>());
+    for (std::size_t i = 0; i < size; i++) {{
+        try {{
+            converted.push_back(items[i].cast<{element_cpp_type}>());
+        }} catch (const pybind11::cast_error&) {{
+            throw pybind11::type_error("{name}[" + std::to_string(i) + "] is not convertible to {element_python_type}");
+        }}
     }}
-    std::copy(converted.begin(), converted.end(), self.get_{name}());
+    for (std::size_t i = 0; i < size; i++) {{
+        self.get_{name}()[i] = {element_from_cpp};
+    }}
 }}"""
 STRUCT_INLINE_ARRAY_GETTER_SETTER_TEMPLATE = """
 .def_property("{name}", {getter}, {setter})
@@ -333,19 +339,58 @@ class StructPybindCppGenerator(FppPybindBindingGenerator):
             The binding lines for the member
         """
         if Unqualified(name) in struct_type.sizes:
+            element_to_python, element_cpp_type, element_from_cpp, element_python_type = \
+                self.get_inline_array_element_info(name, field, fqn, in_)
             return STRUCT_INLINE_ARRAY_GETTER_SETTER_TEMPLATE.format(
                 name=name,
-                getter=STRUCT_INLINE_ARRAY_GETTER_TEMPLATE.format(name=name, fqn=fqn),
-                setter=STRUCT_INLINE_ARRAY_SETTER_TEMPLATE.format(name=name, fqn=fqn),
+                getter=STRUCT_INLINE_ARRAY_GETTER_TEMPLATE.format(
+                    name=name, fqn=fqn, element_to_python=element_to_python
+                ),
+                setter=STRUCT_INLINE_ARRAY_SETTER_TEMPLATE.format(
+                    name=name,
+                    fqn=fqn,
+                    element_cpp_type=element_cpp_type,
+                    element_from_cpp=element_from_cpp,
+                    element_python_type=element_python_type,
+                ),
             )
         return STRUCT_GETTER_SETTER_TEMPLATE.format(
             name=name, fqn=fqn, getter_static_caster=self.get_getter_cast(name=name, field=field, fqn=fqn, in_=in_)
         )
 
+    def get_inline_array_element_info(self, name: str, field: Type, fqn: str, in_: In) -> Tuple[str, str, str, str]:
+        """ Get the conversion expressions for the elements of an inlined array member
+
+        Elements are converted to and from Python one at a time, in the same representation the scalar members of the
+        same type use. Strings are stored as `Fw::ExternalString` (which cannot be copied) so they are converted through
+        `std::string`; enumerations are stored as the enumeration class so they are converted through its `T` type.
+
+        Args:
+            name: name of the member
+            field: the element type of the member
+            fqn: fully qualified C++ name of the struct
+            in_: input support tuple
+        Returns:
+            A tuple of: the expression converting the C++ `item` to Python, the C++ type each Python element is cast
+            to, the expression converting `converted[i]` back to the element type, and the Python type name used in
+            error messages
+        """
+        while isinstance(field, AliasType):
+            field = field.get_underlying_type()
+        if isinstance(field, StringType):
+            return "pybind11::str(item.toChar())", "std::string", "converted[i].c_str()", "str"
+        if isinstance(field, EnumType):
+            enum_class = self.get_fully_qualified_cpp_name(field, in_)
+            return "pybind11::cast(item.e)", f"{enum_class}::T", "converted[i]", f"{enum_class.replace('::', '.')}.T"
+        python_type = str(field) if field.is_primitive() else \
+            self.get_fully_qualified_cpp_name(field, in_).replace("::", ".")
+        element = f"std::remove_extent<{fqn}::Type_of_{name}>::type"
+        return "pybind11::cast(item)", element, "converted[i]", python_type
+
     def get_cpp_includes(self, struct_type: StructType, in_: In) -> List[str]:
         """ Get any includes required by this type generator """
         return super().get_cpp_includes(struct_type, in_) + [
-            "#include <algorithm>",
+            "#include <cstddef>",
             "#include <string>",
             "#include <type_traits>",
             "#include <vector>",

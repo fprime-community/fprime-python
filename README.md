@@ -93,13 +93,19 @@ fw_time_object = Time()
 ```
 
 Struct members are available as properties and as the autocoded `get_<member>()`/`set_<member>()` functions. Members
-declared as inlined arrays (e.g. `rgb: [768] U8`) are copied: reading one returns a `list` of the elements and writing
-one accepts any sequence (`list`, `tuple`, `bytes`, ...) of exactly the declared length.
+declared as inlined arrays (e.g. `rgb: [768] U8`) are copied: reading one returns a new `list` of the elements and
+writing one accepts any sequence (`list`, `tuple`, `bytes`, ...) of exactly the declared length. Elements use the same
+Python representation as scalar members of that type (`str` for strings, `<Enum>.T` for enumerations). A wrong length
+raises `ValueError`; an element that cannot be converted raises `TypeError` and leaves the member unchanged.
 
 ```python
 palette.rgb = bytes(768)   # or palette.set_rgb([...])
 red = palette.rgb[0]       # or palette.get_rgb()[0]
+palette.rgb[0] = 255       # modifies the copy only: assign the whole sequence instead
 ```
+
+Because the list is a copy, element assignment does not write through to the struct. This differs from members whose
+type is an FPP `array`, which are bound by reference and can be modified in place.
 
 ## TODO: custom bindings
 
