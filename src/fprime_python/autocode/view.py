@@ -22,17 +22,17 @@ from .names import cpp_name, namespaces_of
 
 #: The C++ token F Prime builds a `log_` method name from, per FPP event severity
 EVENT_SEVERITY_TOKENS = {
-    fpp.EventSeverity.ActivityHigh: "ACTIVITY_HI",
-    fpp.EventSeverity.ActivityLow: "ACTIVITY_LO",
-    fpp.EventSeverity.Command: "COMMAND",
-    fpp.EventSeverity.Diagnostic: "DIAGNOSTIC",
-    fpp.EventSeverity.Fatal: "FATAL",
-    fpp.EventSeverity.WarningHigh: "WARNING_HI",
-    fpp.EventSeverity.WarningLow: "WARNING_LO",
+    fpp.ast.EventSeverity.ActivityHigh: "ACTIVITY_HI",
+    fpp.ast.EventSeverity.ActivityLow: "ACTIVITY_LO",
+    fpp.ast.EventSeverity.Command: "COMMAND",
+    fpp.ast.EventSeverity.Diagnostic: "DIAGNOSTIC",
+    fpp.ast.EventSeverity.Fatal: "FATAL",
+    fpp.ast.EventSeverity.WarningHigh: "WARNING_HI",
+    fpp.ast.EventSeverity.WarningLow: "WARNING_LO",
 }
 
 
-def is_annotated(node: fpp.AstNode, annotation: str) -> bool:
+def is_annotated(node: fpp.ast.AstNode, annotation: str) -> bool:
     """ Check whether an AST node carries the given annotation
 
     fpp strips the leading "@" and the surrounding whitespace, so annotations compare as plain text.
@@ -50,7 +50,7 @@ def is_annotated(node: fpp.AstNode, annotation: str) -> bool:
 class FormalParameterView:
     """ One formal parameter of a port, command or event """
 
-    def __init__(self, param: fpp.FormalParam, string_class: StringClass) -> None:
+    def __init__(self, param: fpp.ast.FormalParam, string_class: StringClass) -> None:
         """ Wrap a formal parameter, fixing the string class its context calls for """
         self.param = param
         self.string_class = string_class
@@ -127,7 +127,7 @@ class PortView(HandlerView):
     HANDLER_PREFIX = (("FwIndexType", "portNum", "The port number"),)
     HANDLER_KIND = "input port"
 
-    def __init__(self, port: fpp.GeneralPortInstance) -> None:
+    def __init__(self, port: fpp.PortInstance.General) -> None:
         """ Wrap a general port instance
 
         Raises:
@@ -138,7 +138,7 @@ class PortView(HandlerView):
         # Fw::LinearBufferBase, which has nothing to map onto in Python. The handler is pure virtual, so
         # skipping it would leave the generated component abstract -- refuse the component instead.
         port_type = port.type
-        if not isinstance(port_type, fpp.DefPortPortInstanceType):
+        if not isinstance(port_type, fpp.PortInstanceType.DefPort):
             raise UnsupportedModelError(
                 f"port {port.unqualified_name} is a serial port, which fprime-python cannot bind:"
                 f" its handler takes a serialization buffer. Give the port a port type to bind it."
@@ -171,7 +171,7 @@ class PortView(HandlerView):
         return f"isConnected_{self.name}_OutputPort"
 
     @property
-    def definition(self) -> fpp.DefPort:
+    def definition(self) -> fpp.ast.DefPort:
         """ The port definition this instance is an instance of """
         return self.type.definition
 
@@ -200,7 +200,7 @@ class InternalPortView(HandlerView):
 
     HANDLER_KIND = "internal port"
 
-    def __init__(self, port: fpp.InternalPortInstance) -> None:
+    def __init__(self, port: fpp.PortInstance.Internal) -> None:
         """ Wrap an internal port instance """
         self.port = port
 
@@ -237,7 +237,7 @@ class CommandView(HandlerView):
     )
     HANDLER_KIND = "command"
 
-    def __init__(self, command: fpp.NonParamCommand) -> None:
+    def __init__(self, command: fpp.Command.NonParam) -> None:
         """ Wrap a command """
         self.command = command
 
@@ -346,7 +346,7 @@ class ComponentView:
         self.component = component
 
     @property
-    def node(self) -> fpp.DefComponent:
+    def node(self) -> fpp.ast.DefComponent:
         """ The component's definition node """
         return self.component.node
 
@@ -378,17 +378,17 @@ class ComponentView:
     @property
     def is_queued(self) -> bool:
         """ Whether the component is queued, and so dispatches its own messages """
-        return self.node.kind == fpp.ComponentKind.Queued
+        return self.node.kind == fpp.ast.ComponentKind.Queued
 
     @property
     def has_queue(self) -> bool:
         """ Whether the component has a message queue, and so takes a queue depth at init """
-        return self.node.kind != fpp.ComponentKind.Passive
+        return self.node.kind != fpp.ast.ComponentKind.Passive
 
     @property
     def has_time_port(self) -> bool:
         """ Whether the component can request the current time """
-        return fpp.SpecialPortInstanceKind.TimeGet in self.component.special_port_map
+        return fpp.ast.SpecialPortInstanceKind.TimeGet in self.component.special_port_map
 
     @property
     def has_commands(self) -> bool:
@@ -404,21 +404,21 @@ class ComponentView:
         internal ports and async commands can each ask for one.
         """
         for port in self.component.port_map.values():
-            if isinstance(port, fpp.GeneralPortInstance):
+            if isinstance(port, fpp.PortInstance.General):
                 kind = port.kind
                 if (
-                    isinstance(kind, fpp.AsyncInputGeneralKind)
-                    and kind.queue_full == fpp.QueueFull.Hook
+                    isinstance(kind, fpp.GeneralKind.AsyncInput)
+                    and kind.queue_full == fpp.ast.QueueFull.Hook
                 ):
                     return True
             elif (
-                isinstance(port, fpp.InternalPortInstance)
-                and port.queue_full == fpp.QueueFull.Hook
+                isinstance(port, fpp.PortInstance.Internal)
+                and port.queue_full == fpp.ast.QueueFull.Hook
             ):
                 return True
         return any(
-            isinstance(command.command.kind, fpp.AsyncNonParamKind)
-            and command.command.kind.queue_full == fpp.QueueFull.Hook
+            isinstance(command.command.kind, fpp.NonParamKind.Async)
+            and command.command.kind.queue_full == fpp.ast.QueueFull.Hook
             for command in self.commands
         )
 
@@ -466,7 +466,7 @@ class ComponentView:
         """
         ports = []
         for port in self.component.port_map.values():
-            if not isinstance(port, fpp.GeneralPortInstance):
+            if not isinstance(port, fpp.PortInstance.General):
                 continue
             try:
                 view = PortView(port)
@@ -492,7 +492,7 @@ class ComponentView:
         return [
             InternalPortView(port)
             for port in self.component.port_map.values()
-            if isinstance(port, fpp.InternalPortInstance)
+            if isinstance(port, fpp.PortInstance.Internal)
         ]
 
     @property
@@ -506,7 +506,7 @@ class ComponentView:
         return [
             CommandView(command)
             for command in self.component.command_map.values()
-            if isinstance(command, fpp.NonParamCommand)
+            if isinstance(command, fpp.Command.NonParam)
         ]
 
     @property
@@ -545,7 +545,7 @@ class TopologyView:
         self.topology = topology
 
     @property
-    def node(self) -> fpp.DefTopology:
+    def node(self) -> fpp.ast.DefTopology:
         """ The topology's definition node """
         return self.topology.node
 
@@ -594,7 +594,7 @@ class TopologyView:
                 f" `deployment topology {self.name}` to bind it."
             )
 
-    def bound_instances(self, annotation: str) -> List[fpp.ComponentInterfaceInstance]:
+    def bound_instances(self, annotation: str) -> List[fpp.InterfaceInstance.Component]:
         """ The topology's component instances whose component carries the given annotation
 
         An instance is bound into Python when the component it instantiates is, so the annotation is
@@ -612,7 +612,7 @@ class TopologyView:
         return [
             instance
             for instance in self.topology.instance_map
-            if isinstance(instance, fpp.ComponentInterfaceInstance)
+            if isinstance(instance, fpp.InterfaceInstance.Component)
             and instance.component is not None
             and is_annotated(instance.component.node, annotation)
         ]

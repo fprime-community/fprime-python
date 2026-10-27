@@ -96,7 +96,7 @@ class TopologyBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, topology: fpp.Topology
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, topology: fpp.Topology
     ) -> None:
         """ Initialize the generator for one topology
 

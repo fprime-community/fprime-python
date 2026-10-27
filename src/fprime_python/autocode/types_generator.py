@@ -38,7 +38,7 @@ class ArrayBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, array_type: fpp.ArrayType
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, array_type: fpp.Type.Array
     ) -> None:
         """ Initialize the generator for one array definition
 
@@ -72,7 +72,7 @@ class ArrayBindingGenerator(BindingGenerator):
         F Prime makes such an array's `ElementType` a `Fw::ExternalString`, a view onto storage inside the
         array. It cannot be copied, so the element crosses into Python as a `std::string` instead.
         """
-        return isinstance(self.array_type.anon_array.elt_type.underlying_type, fpp.StringType)
+        return isinstance(self.array_type.anon_array.elt_type.underlying_type, fpp.Type.String)
 
     def bind(self, body: Body) -> None:
         """ Write the pybind11 statements binding this array """
@@ -144,7 +144,7 @@ class EnumBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, enum_type: fpp.EnumType
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, enum_type: fpp.Type.Enum
     ) -> None:
         """ Initialize the generator for one enum definition
 
@@ -260,7 +260,7 @@ class StructBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol, struct_type: fpp.StructType
+        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, struct_type: fpp.Type.Struct
     ) -> None:
         """ Initialize the generator for one struct definition
 
@@ -277,7 +277,7 @@ class StructBindingGenerator(BindingGenerator):
         """ Whether any member is an inline array: the struct's `sizes` map holds an entry for each """
         return bool(self.struct_type.sizes)
 
-    def scalar_member(self, name: str, member_type: fpp.Type) -> str:
+    def scalar_member(self, name: str, member_type: fpp.Type.Variant) -> str:
         """ The bindings of one member that is not an inline array
 
         Args:
@@ -294,7 +294,7 @@ class StructBindingGenerator(BindingGenerator):
         )
         return STRUCT_MEMBER_TEMPLATE.format(name=name, fqn=self.cpp_fqn, getter_cast=getter_cast)
 
-    def inline_array_member(self, name: str, element_type: fpp.Type) -> str:
+    def inline_array_member(self, name: str, element_type: fpp.Type.Variant) -> str:
         """ The bindings of one member that is an inline array
 
         Elements are converted to and from Python one at a time, in the representation scalar members of the
@@ -310,11 +310,11 @@ class StructBindingGenerator(BindingGenerator):
         """
         fqn = self.cpp_fqn
         element_name = type_name(element_type, StringClass.STRUCT_MEMBER)
-        if isinstance(element_type.underlying_type, fpp.StringType):
+        if isinstance(element_type.underlying_type, fpp.Type.String):
             to_python, cpp_type, from_cpp, python_type = (
                 "pybind11::str(item.toChar())", "std::string", "converted[i].c_str()", "str"
             )
-        elif isinstance(element_type.underlying_type, fpp.EnumType):
+        elif isinstance(element_type.underlying_type, fpp.Type.Enum):
             to_python, cpp_type, from_cpp, python_type = (
                 "pybind11::cast(item.e)",
                 f"{element_name}::T",

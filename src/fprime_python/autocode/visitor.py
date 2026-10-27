@@ -25,7 +25,7 @@ from .types_generator import (
 from .view import ComponentView, TopologyView, is_annotated
 
 
-class AnnotatedDefinitionVisitor(fpp.NodeVisitor):
+class AnnotatedDefinitionVisitor(fpp.AstVisitor):
     """ Visitor generating bindings for the definitions of one set of translation units
 
     Bindings for FPP types are generated for every type in the visited translation units, because a bound
@@ -55,7 +55,7 @@ class AnnotatedDefinitionVisitor(fpp.NodeVisitor):
         self.include_manager = include_manager
         self.output: Dict[Path, str] = {}
 
-    def symbol_of(self, node: fpp.AstNode) -> fpp.Symbol:
+    def symbol_of(self, node: fpp.ast.AstNode) -> fpp.Symbol.Variant:
         """ The symbol a definition node defines
 
         Args:
@@ -74,31 +74,31 @@ class AnnotatedDefinitionVisitor(fpp.NodeVisitor):
         for name, contents in files.items():
             self.output[self.output_path / name] = contents
 
-    def visit_DefArray(self, node: fpp.DefArray) -> None:
+    def visit_DefArray(self, node: fpp.ast.DefArray) -> None:
         """ Run array generation when an array node is visited """
         symbol = self.symbol_of(node)
-        assert isinstance(node.resolved_type, fpp.ArrayType)
+        assert isinstance(node.resolved_type, fpp.Type.Array)
         self.emit(
             ArrayBindingGenerator(self.include_manager, symbol, node.resolved_type).files()
         )
 
-    def visit_DefEnum(self, node: fpp.DefEnum) -> None:
+    def visit_DefEnum(self, node: fpp.ast.DefEnum) -> None:
         """ Run enum generation when an enum node is visited """
         symbol = self.symbol_of(node)
-        assert isinstance(node.resolved_type, fpp.EnumType)
+        assert isinstance(node.resolved_type, fpp.Type.Enum)
         self.emit(
             EnumBindingGenerator(self.include_manager, symbol, node.resolved_type).files()
         )
 
-    def visit_DefStruct(self, node: fpp.DefStruct) -> None:
+    def visit_DefStruct(self, node: fpp.ast.DefStruct) -> None:
         """ Run struct generation when a struct node is visited """
         symbol = self.symbol_of(node)
-        assert isinstance(node.resolved_type, fpp.StructType)
+        assert isinstance(node.resolved_type, fpp.Type.Struct)
         self.emit(
             StructBindingGenerator(self.include_manager, symbol, node.resolved_type).files()
         )
 
-    def visit_DefStateMachine(self, node: fpp.DefStateMachine) -> None:
+    def visit_DefStateMachine(self, node: fpp.ast.DefStateMachine) -> None:
         """ Skip a state machine definition without descending into it
 
         fpp's analysis synthesizes a `State` enumeration inside every state machine. F Prime generates that
@@ -107,7 +107,7 @@ class AnnotatedDefinitionVisitor(fpp.NodeVisitor):
         would bind a type that does not exist under a file name that collides between state machines.
         """
 
-    def visit_DefComponent(self, node: fpp.DefComponent) -> None:
+    def visit_DefComponent(self, node: fpp.ast.DefComponent) -> None:
         """ Run component generation when a component node is visited
 
         Components are only generated when they are annotated with @fprime-python. Component generation
@@ -124,7 +124,7 @@ class AnnotatedDefinitionVisitor(fpp.NodeVisitor):
             ComponentImplementationGenerator(self.include_manager, symbol, component).files()
         )
 
-    def visit_DefTopology(self, node: fpp.DefTopology) -> None:
+    def visit_DefTopology(self, node: fpp.ast.DefTopology) -> None:
         """ Generate topology bindings when an annotated topology node is visited
 
         A topology holds Python-bound component instances, and Python needs a handle on those instances

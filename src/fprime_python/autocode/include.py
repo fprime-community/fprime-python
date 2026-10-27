@@ -30,14 +30,14 @@ class IncludeManager(object):
     #: follow from the symbol class name -- a struct's header is "SerializableAc.hpp" -- so the kinds
     #: with a generated header are listed, and a symbol of any other kind is an error.
     symbol_type_to_include_type_name: Dict[Type[fpp.Symbol], str] = {
-        fpp.SymbolAliasType: "Alias",
-        fpp.SymbolArrayType: "Array",
-        fpp.SymbolComponent: "Component",
-        fpp.SymbolConstant: "Constant",
-        fpp.SymbolEnumType: "Enum",
-        fpp.SymbolPort: "Port",
-        fpp.SymbolStructType: "Serializable",
-        fpp.SymbolTopology: "Topology",
+        fpp.Symbol.AliasType: "Alias",
+        fpp.Symbol.ArrayType: "Array",
+        fpp.Symbol.Component: "Component",
+        fpp.Symbol.Constant: "Constant",
+        fpp.Symbol.EnumType: "Enum",
+        fpp.Symbol.Port: "Port",
+        fpp.Symbol.StructType: "Serializable",
+        fpp.Symbol.Topology: "Topology",
     }
 
     def __init__(
@@ -55,7 +55,7 @@ class IncludeManager(object):
         working_directory = Path.cwd() if prefix_working_directory is None else prefix_working_directory
         self.prefixes = [(working_directory / prefix).resolve() for prefix in prefixes]
 
-    def get_include_path(self, symbol: fpp.Symbol) -> str:
+    def get_include_path(self, symbol: fpp.Symbol.Variant) -> str:
         """ Determine the include path of the header F Prime generates for a definition
 
         Args:
@@ -93,7 +93,7 @@ class IncludeManager(object):
             return file_name
         return f"{possible_include_paths[0].as_posix()}/{file_name}"
 
-    def get_sibling_path(self, symbol: fpp.Symbol, file_name: str) -> str:
+    def get_sibling_path(self, symbol: fpp.Symbol.Variant, file_name: str) -> str:
         """ Determine the include path of a file alongside a definition's generated header
 
         The files this autocoder generates land next to the ones F Prime generates, so their include
