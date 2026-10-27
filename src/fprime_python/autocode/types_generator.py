@@ -11,7 +11,7 @@ import fpp
 from fprime_cpp_codegen import Body
 
 from .binding_generator import BindingGenerator, expression_chain
-from .cpp_types import struct_member_getter
+from .cpp_types import StringClass, struct_member_getter, type_name
 from .include import IncludeManager
 
 
@@ -194,6 +194,43 @@ STRUCT_MEMBER_TEMPLATE = """.def_property("{name}", {getter_cast}(&{fqn}::get_{n
 .def("get_{name}", {getter_cast}(&{fqn}::get_{name}))
 .def("set_{name}", &{fqn}::set_{name})"""
 
+#: Getter of an inline array member, copying the elements out into a new Python list
+STRUCT_INLINE_ARRAY_GETTER_TEMPLATE = """[](const {fqn}& self) {{
+    pybind11::list items;
+    for (const auto& item : self.get_{name}()) {{
+        items.append({element_to_python});
+    }}
+    return items;
+}}"""
+
+#: Setter of an inline array member, copying the elements of any sequence of exactly the right length in.
+#: The sequence is indexed over [0, size) rather than iterated, so one whose length changes under the
+#: setter cannot over- or under-fill the array.
+STRUCT_INLINE_ARRAY_SETTER_TEMPLATE = """[]({fqn}& self, const pybind11::sequence& items) {{
+    constexpr std::size_t size = std::extent<{fqn}::Type_of_{name}>::value;
+    if (pybind11::len(items) != size) {{
+        throw pybind11::value_error("{name} requires exactly " + std::to_string(size) + " elements");
+    }}
+    // Convert every element before writing so a failed conversion leaves the member unchanged
+    std::vector<{element_cpp_type}> converted;
+    converted.reserve(size);
+    for (std::size_t i = 0; i < size; i++) {{
+        try {{
+            converted.push_back(items[i].cast<{element_cpp_type}>());
+        }} catch (const pybind11::cast_error&) {{
+            throw pybind11::type_error("{name}[" + std::to_string(i) + "] is not convertible to {element_python_type}");
+        }}
+    }}
+    for (std::size_t i = 0; i < size; i++) {{
+        self.get_{name}()[i] = {element_from_cpp};
+    }}
+}}"""
+
+#: Property and explicit accessors bound for one inline array struct member
+STRUCT_INLINE_ARRAY_MEMBER_TEMPLATE = """.def_property("{name}", {getter}, {setter})
+.def("get_{name}", {getter})
+.def("set_{name}", {setter})"""
+
 
 class StructBindingGenerator(BindingGenerator):
     """ Generator for FPP struct bindings into Python
@@ -204,9 +241,11 @@ class StructBindingGenerator(BindingGenerator):
     The generated getters are overloaded on constness for every member that is returned by reference, so
     referring to one needs a cast to pick an overload; the bindings use the non-const getter.
 
-    Struct members that are inline arrays are skipped. F Prime gives them a getter returning a reference
-    to a member typedef with no Python counterpart -- Python has no fixed-size array type and FPP does not
-    generate a class for an inline array -- so there is nothing to bind them to.
+    Struct members that are inline arrays (e.g. `rgb: [768] U8`) are C arrays in the generated C++, which
+    have no Python counterpart. They are bound by value instead: the getter copies the elements into a
+    list and the setter copies the elements of any sequence of the right length (a list, tuple, bytes,
+    ...) into the array. Elements cross the boundary the same way scalar members of the same type do:
+    strings as `str`, enumerations as the `T` enumeration.
 
     Example Output:
     ```cpp
@@ -234,31 +273,87 @@ class StructBindingGenerator(BindingGenerator):
         self.struct_type = struct_type
 
     @property
-    def bound_members(self) -> List[Tuple[str, fpp.Type]]:
-        """ The struct's bindable members and their types, in declaration order
+    def has_inline_arrays(self) -> bool:
+        """ Whether any member is an inline array: the struct's `sizes` map holds an entry for each """
+        return bool(self.struct_type.sizes)
 
-        The semantic type lists its members in declaration order, which is the order F Prime declares the
-        accessors in. Members that are inline arrays are dropped: the struct's `sizes` map holds an entry
-        for each of them.
+    def scalar_member(self, name: str, member_type: fpp.Type) -> str:
+        """ The bindings of one member that is not an inline array
+
+        Args:
+            name: The name of the member
+            member_type: The type of the member
+        Returns:
+            The chained pybind11 calls binding the member
         """
-        return [
-            (name, member_type)
-            for name, member_type in self.struct_type.anon_struct.members
-            if name not in self.struct_type.sizes
-        ]
+        field_type, is_const = struct_member_getter(member_type)
+        getter_cast = GETTER_STATIC_CAST_TEMPLATE.format(
+            field_type=field_type,
+            fqn=self.cpp_fqn,
+            const_qualifier=" const" if is_const else "",
+        )
+        return STRUCT_MEMBER_TEMPLATE.format(name=name, fqn=self.cpp_fqn, getter_cast=getter_cast)
+
+    def inline_array_member(self, name: str, element_type: fpp.Type) -> str:
+        """ The bindings of one member that is an inline array
+
+        Elements are converted to and from Python one at a time, in the representation scalar members of the
+        same type use. A string element is a `Fw::ExternalString`, which cannot be copied, so it is converted
+        through `std::string`; an enumeration element is the enumeration class, so it is converted through
+        its `T`.
+
+        Args:
+            name: The name of the member
+            element_type: The type of the member's elements
+        Returns:
+            The chained pybind11 calls binding the member
+        """
+        fqn = self.cpp_fqn
+        element_name = type_name(element_type, StringClass.STRUCT_MEMBER)
+        if isinstance(element_type.underlying_type, fpp.StringType):
+            to_python, cpp_type, from_cpp, python_type = (
+                "pybind11::str(item.toChar())", "std::string", "converted[i].c_str()", "str"
+            )
+        elif isinstance(element_type.underlying_type, fpp.EnumType):
+            to_python, cpp_type, from_cpp, python_type = (
+                "pybind11::cast(item.e)",
+                f"{element_name}::T",
+                "converted[i]",
+                f"{element_name.replace('::', '.')}.T",
+            )
+        else:
+            to_python, cpp_type, from_cpp, python_type = (
+                "pybind11::cast(item)",
+                f"std::remove_extent<{fqn}::Type_of_{name}>::type",
+                "converted[i]",
+                element_name.replace("::", "."),
+            )
+        getter = STRUCT_INLINE_ARRAY_GETTER_TEMPLATE.format(
+            name=name, fqn=fqn, element_to_python=to_python
+        )
+        setter = STRUCT_INLINE_ARRAY_SETTER_TEMPLATE.format(
+            name=name,
+            fqn=fqn,
+            element_cpp_type=cpp_type,
+            element_from_cpp=from_cpp,
+            element_python_type=python_type,
+        )
+        return STRUCT_INLINE_ARRAY_MEMBER_TEMPLATE.format(name=name, getter=getter, setter=setter)
 
     def bind(self, body: Body) -> None:
         """ Write the pybind11 statements binding this struct """
-        fqn = self.cpp_fqn
         links = [".def(pybind11::init<>())"]
-        for name, member_type in self.bound_members:
-            field_type, is_const = struct_member_getter(member_type)
-            getter_cast = GETTER_STATIC_CAST_TEMPLATE.format(
-                field_type=field_type,
-                fqn=fqn,
-                const_qualifier=" const" if is_const else "",
-            )
-            links.append(
-                STRUCT_MEMBER_TEMPLATE.format(name=name, fqn=fqn, getter_cast=getter_cast)
-            )
-        body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))
+        # The semantic type lists its members in declaration order, which is the order F Prime declares
+        # the accessors in.
+        for name, member_type in self.struct_type.anon_struct.members:
+            if name in self.struct_type.sizes:
+                links.append(self.inline_array_member(name, member_type))
+            else:
+                links.append(self.scalar_member(name, member_type))
+        body.raw(expression_chain(f'pybind11::class_<{self.cpp_fqn}>(m, "{self.name}")', links))
+
+    def cpp_system_includes(self) -> List[str]:
+        """ Get any system includes required by this type generator """
+        if not self.has_inline_arrays:
+            return []
+        return ["cstddef", "string", "type_traits", "vector"]
