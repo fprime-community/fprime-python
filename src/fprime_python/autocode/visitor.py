@@ -107,6 +107,14 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
         would bind a type that does not exist under a file name that collides between state machines.
         """
 
+    def visit_DefModuleTemplate(self, node: fpp.ast.DefModuleTemplate) -> None:
+        """ Skip a module template definition without descending into it
+
+        The definitions inside a template are not analyzed and have no symbols; they only exist once the
+        template is expanded. Each expansion's definitions are visited through the `expand` instead, with
+        the template's arguments already resolved to the types they name.
+        """
+
     def visit_DefComponent(self, node: fpp.ast.DefComponent) -> None:
         """ Run component generation when a component node is visited
 

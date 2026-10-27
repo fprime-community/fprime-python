@@ -10,7 +10,7 @@ are:
  - everything else is passed by `const` reference and returned by value
  - a `ref` formal parameter is passed by non-const reference
  - an alias keeps its own name rather than resolving to the type it aliases, but is passed and returned
-   according to the type it aliases
+   according to the type it aliases (its `underlying_type`, since `is_primitive` does not look through it)
 
 Strings are the exception, twice over. F Prime has no single string type and picks a different class per
 context, so callers say which one they want; and an alias of a string is spelled as that class rather than as
@@ -105,9 +105,9 @@ def formal_parameter_type(param: fpp.ast.FormalParam, string_class: StringClass)
     name = type_name(type_, string_class)
     if param.kind == fpp.ast.FormalParamKind.Ref:
         return f"{name}&"
-    # `is_primitive` looks through aliases, so an alias of a primitive is passed by value under the
-    # alias's own name, which is how F Prime's autocoder spells it.
-    if type_.is_primitive:
+    # An alias of a primitive is passed by value under the alias's own name, which is how F Prime's
+    # autocoder spells it. `is_primitive` does not look through aliases, so the aliased type is checked.
+    if type_.underlying_type.is_primitive:
         return name
     return f"const {name}&"
 
@@ -129,6 +129,6 @@ def struct_member_getter(type_: fpp.Type.Variant) -> Tuple[str, bool]:
     # enumeration class that wraps it. An alias of an enumeration is the same, under the alias's own name.
     if isinstance(type_.underlying_type, fpp.Type.Enum):
         return f"{type_name(type_, StringClass.STRUCT_MEMBER)}::T", True
-    if type_.is_primitive:
+    if type_.underlying_type.is_primitive:
         return type_name(type_, StringClass.STRUCT_MEMBER), True
     return f"{type_name(type_, StringClass.STRUCT_MEMBER)}&", False

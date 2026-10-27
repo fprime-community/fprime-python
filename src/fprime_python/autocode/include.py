@@ -72,8 +72,14 @@ class IncludeManager(object):
             raise IncludeError(
                 f"Unsupported symbol type for include path determination: {type(symbol).__name__}"
             ) from None
+        # A template argument never gets here: references through one resolve to the argument's own
+        # symbol. It is excluded only because it is the one kind of symbol with no `definition`.
+        assert not isinstance(
+            symbol,
+            (fpp.Symbol.TemplateConstantArg, fpp.Symbol.TemplateTypeArg, fpp.Symbol.TemplateInterfaceArg),
+        )
 
-        directory = Path(symbol.definition.location.uri).resolve().parent
+        directory =Path(symbol.definition.location.uri).resolve().parent
 
         possible_include_paths = [
             directory.relative_to(prefix)
