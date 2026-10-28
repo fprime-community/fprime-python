@@ -449,7 +449,7 @@ class ComponentView:
                 raise UnsupportedModelError(
                     f"Component {self.fpp_name} has {feature}, which fprime-python cannot bind: F Prime"
                     f" declares a handler for each of them that has no Python equivalent yet. Remove the"
-                    f" @{FPRIME_PYTHON_ANNOTATION} annotation to implement this component in C++ instead."
+                    f" '@ {FPRIME_PYTHON_ANNOTATION}' annotation to implement this component in C++ instead."
                 )
         # Constructing the port views rejects a serial port
         self._general_ports(inputs=True)
@@ -517,8 +517,8 @@ class ComponentView:
     def handlers(self) -> List[HandlerView]:
         """ Every component member F Prime declares a handler for, in generation order
 
-        The three families are generated identically -- an override that forwards into Python, and a stub
-        in the Python template -- so the generators walk this one list rather than each family in turn.
+        The three families get the same forwarding C++ override and a stub in the Python template (a command's
+        stub also sends its response), so the generators walk this one list rather than each family in turn.
         """
         handlers: List[HandlerView] = list(self.input_ports)
         handlers += self.internal_ports

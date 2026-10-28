@@ -168,5 +168,5 @@ class TopologyBindingGenerator(BindingGenerator):
 
     def cpp_system_includes(self) -> List[str]:
         """ Get any system includes required by this generator """
-        # std::runtime_error, thrown when an instance is read before the topology has initialized it
+        # std::runtime_error, thrown when an instance is read outside the topology's setup and teardown
         return ["stdexcept"]

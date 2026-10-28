@@ -24,4 +24,21 @@ module Fixture {
     instance pyComp
   }
 
+  @ A C++ component, instantiated by an ordinary deployment
+  passive component CppComp {
+    sync input port textIn: Text
+  }
+
+  instance cppComp: CppComp base id 0x200
+
+  @ An unannotated deployment without Python instances is generated as before
+  deployment topology Plain {
+    instance cppComp
+  }
+
+  @ A non-deployment topology of Python instances needs no annotation
+  topology Sub {
+    instance pyComp
+  }
+
 }
