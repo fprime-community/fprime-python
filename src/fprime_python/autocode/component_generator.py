@@ -54,9 +54,9 @@ def checked_def(
     """ Get a binding that checks each sized string argument against its declared size before the call
 
     Port, event and internal-port strings are converted into a scratch F Prime string bounded only by its
-    own capacity, and F Prime later serializes them at their declared size, dropping the excess. Event strings
-    are further capped at `cap`, which bounds even a string of default size. A method taking such a string is
-    therefore bound through a lambda that rejects an over-long one first.
+    own capacity, not by their declared size, which F Prime enforces only where it serializes them, by dropping
+    the excess. Event strings are further capped at `cap`, which bounds even a string of default size. A method
+    taking such a string is therefore bound through a lambda that rejects an over-long one first.
 
     Args:
         name: The name of the method, in C++ and in Python
@@ -68,7 +68,10 @@ def checked_def(
         The pybind11 `.def(...)` call, or None when no argument needs a check
     """
     sizes = {
-        param.name: param.string_size if cap is not None else (None if param.declared_size is None else str(param.declared_size))
+        param.name: (
+            param.string_size if cap is not None
+            else None if param.declared_size is None else str(param.declared_size)
+        )
         for param in params
     }
     sized = [param for param in params if sizes[param.name] is not None]

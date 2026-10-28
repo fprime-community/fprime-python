@@ -65,9 +65,11 @@ inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType
 //! \brief Reject a string longer than the size the model declares for it
 //!
 //! A port, event or telemetry string reaches C++ as an Fw::StringBase that check_string_fits has bounded only by
-//! its scratch capacity, while F Prime serializes it at the model's `string size`, dropping the excess. Event and
-//! telemetry strings are further capped at FW_LOG_STRING_MAX_SIZE and FW_TLM_STRING_MAX_SIZE. The generated
-//! bindings call this with the size F Prime serializes the string at, so that such a string is refused instead.
+//! its scratch capacity, not by the model. The model's `string size` is otherwise enforced only where F Prime
+//! serializes the string, by dropping the excess: on an async port, and for events and telemetry, which are further
+//! capped at FW_LOG_STRING_MAX_SIZE and FW_TLM_STRING_MAX_SIZE. A sync port or internal port passes it on whole. The
+//! generated bindings call this with the model's bound, capped as F Prime caps it, so that an over-long string is
+//! refused on every path.
 //!
 //! \param value The string received from Python
 //! \param size The size the string is serialized at, in bytes, terminator excluded
