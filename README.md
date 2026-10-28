@@ -42,7 +42,8 @@ library, which handles the nuances of the Python API.
 
 In order to use `fprime-python` download the source code, or add it as a Git submodule.  Once finished, install the
 autocoder and its dependencies by running `pip install .` in the `fprime-python` checkout. This requires Python 3.10
-or newer.
+or newer. The autocoder reads the FPP model directly, so `FPRIME_ENABLE_JSON_MODEL_GENERATION` and
+`fprime-python-model` are no longer needed.
 
 Next, add the path to the download in the `library_locations` list set in settings.ini for a deployment. 
 
@@ -81,6 +82,20 @@ component features cannot be bound yet, because F Prime declares a handler for e
 In each case the autocoder refuses rather than generating a class that would leave the handler unimplemented and
 fail to link. Drop the `@ fprime-python` annotation to implement such a component in C++ instead.
 
+## Setting a Deployment Up With Python Bindings
+
+The deployment topology that instantiates Python components must also carry the `@ fprime-python` annotation. Only an
+annotated topology gets the `setup` and `teardown` bindings and the `Instances` handles that the Python runner uses to
+start the deployment. A deployment topology that instantiates `@ fprime-python` components without the annotation is
+rejected with an error naming the topology.
+
+```
+@ fprime-python
+deployment topology MyDeployment {
+    ...
+}
+```
+
 An annotated topology must be a `deployment topology`: the binding calls the topology's setup and teardown, and
 F Prime only generates those for a deployment.
 
@@ -112,8 +127,8 @@ fw_time_object = Time()
 Struct members are available as properties and as the autocoded `get_<member>()`/`set_<member>()` functions. Members
 declared as inlined arrays (e.g. `rgb: [768] U8`) are copied: reading one returns a new `list` of the elements and
 writing one accepts a sequence of elements (`list`, `tuple`, `bytes` for integer elements, ...) of exactly the declared
-length. Elements use the same Python representation as scalar members of that type (`str` for strings, truncated to the
-declared string size; `<Enum>.T` for enumerations). A wrong length raises `ValueError`; an element that cannot be
+length. Elements use the same Python representation as scalar members of that type (`str` for strings; `<Enum>.T` for
+enumerations). A wrong length raises `ValueError`; an element that cannot be
 converted raises `TypeError` and leaves the member unchanged.
 
 ```python
@@ -124,6 +139,17 @@ palette.rgb[0] = 255       # modifies the copy only: assign the whole sequence i
 
 Because the list is a copy, element assignment does not write through to the struct. This differs from members whose
 type is an FPP `array`, which are bound by reference and can be modified in place.
+
+### Strings
+
+A Python `str` passed to F Prime must fit the F Prime string it is copied into: no more characters than the string's
+capacity allows (its declared `string size`, or the default size for an unsized string) and no NUL characters. A `str`
+that does not fit raises `ValueError` rather than being stored truncated. This applies to struct members, array
+elements, inline array elements, and every string argument and return value. Event and telemetry string arguments are
+then serialized up to their declared size, as they are for a C++ caller.
+
+A `ValueError` raised in a Python handler, such as a port handler returning a `str` that is too long, is not caught by
+the generated C++ and ends the process. Check string lengths in Python where the input is not trusted.
 
 ## Development
 
