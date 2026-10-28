@@ -37,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "mypy>=1.11",
+    "pytest>=8",
 ]
 
 [project.urls]
