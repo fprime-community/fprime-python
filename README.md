@@ -156,7 +156,9 @@ A Python `str` copied into an F Prime string must fit that string's storage and 
   `FW_INTERNAL_INTERFACE_STRING_MAX_SIZE` for internal ports.
 
 A `ValueError` raised in a Python handler, such as a port handler returning a `str` that is too long, is not caught by
-the generated C++ and ends the process. Check string lengths in Python where the input is not trusted.
+the generated C++. When an F Prime thread made the call it ends the process; when Python code started the call it
+reaches that code, but any guarded input port it passed through is left locked. Check string lengths in Python where
+the input is not trusted.
 
 ## Development
 
