@@ -364,11 +364,6 @@ class ChannelView:
         return f"tlmWrite_{self.name}"
 
     @property
-    def declared_size(self) -> Optional[int]:
-        """ The channel's declared `string size`, None unless it is a string of explicit size """
-        return declared_string_size(self.channel.channel_type)
-
-    @property
     def string_size(self) -> Optional[str]:
         """ The C++ expression for the size of the channel's string, None unless it is a string """
         return string_size_expression(self.channel.channel_type)

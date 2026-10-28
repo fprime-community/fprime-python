@@ -62,7 +62,7 @@ inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType
     }
 }
 
-//! \brief Reject a string longer than the size the model declares for it
+//! \brief Reject a string longer than the size it is serialized at: its declared size, capped for events and telemetry
 //!
 //! A port, event or telemetry string reaches C++ as an Fw::StringBase that check_string_fits has bounded only by
 //! its scratch capacity, not by the model. The model's `string size` is otherwise enforced only where F Prime

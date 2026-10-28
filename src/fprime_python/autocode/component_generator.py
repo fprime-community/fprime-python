@@ -29,7 +29,7 @@ TELEMETRY_DEF_TEMPLATE = (
 )
 
 
-#: A sized string channel is written through a lambda that first checks the size F Prime serializes it at
+#: A string channel is written through a lambda that first checks the size F Prime serializes it at
 CHECKED_TELEMETRY_DEF_TEMPLATE = """.def("{name}", []({fqn}& self, const Fw::StringBase& arg, Fw::Time _tlmTime) {{
     FprimePython::check_declared_size(arg, {size});
     self.{name}(arg, _tlmTime);
@@ -51,7 +51,7 @@ def checked_def(
     params: Sequence[FormalParameterView],
     cap: Optional[str] = None,
 ) -> Optional[str]:
-    """ Get a binding that checks each sized string argument against its declared size before the call
+    """ Get a binding that checks each sized string argument against the size it is serialized at before the call
 
     Port, event and internal-port strings are converted into a scratch F Prime string bounded only by its
     own capacity, not by their declared size, which F Prime enforces only where it serializes them, by dropping
@@ -68,13 +68,11 @@ def checked_def(
         The pybind11 `.def(...)` call, or None when no argument needs a check
     """
     sizes = {
-        param.name: (
-            param.string_size if cap is not None
-            else None if param.declared_size is None else str(param.declared_size)
-        )
+        param.name: size
         for param in params
+        if (size := param.string_size if cap is not None else param.declared_size) is not None
     }
-    sized = [param for param in params if sizes[param.name] is not None]
+    sized = [param for param in params if param.name in sizes]
     if not sized:
         return None
     declarations = [f"{cpp_type} {arg}" for cpp_type, arg, _ in prefix]
