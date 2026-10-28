@@ -2,6 +2,7 @@
 #ifndef FPRIME_PYTHON_HPP_
 #define FPRIME_PYTHON_HPP_
 #include <pybind11/pybind11.h>
+#include <string>
 #include "Fw/Types/String.hpp"
 #include "Fw/Types/StringBase.hpp"
 #include "Fw/Types/StringTemplate.hpp"
@@ -40,6 +41,28 @@ namespace Os {
 void bind_osal(pybind11::module_& os_module);
 } // namespace Os
 
+namespace FprimePython {
+//! \brief Reject a Python string that an F Prime string of the given capacity cannot hold unchanged
+//!
+//! Fw::StringBase::operator=(const char*) copies with string_copy, which silently drops whatever does not fit and
+//! stops at the first NUL. A truncated path or command argument would then be used for logic with no indication
+//! to the caller, so such a string is refused with a Python ValueError instead.
+//!
+//! \param value The string received from Python
+//! \param capacity The capacity of the destination F Prime string, terminator included
+inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType capacity) {
+    if (value.find('\0') != std::string::npos) {
+        throw pybind11::value_error("F Prime strings cannot contain NUL characters");
+    }
+    // The capacity includes the terminator, so a string of exactly the capacity does not fit
+    if (value.length() >= capacity) {
+        throw pybind11::value_error("string of length " + std::to_string(value.length()) +
+                                    " exceeds the F Prime string maximum of " +
+                                    std::to_string(capacity - 1) + " characters");
+    }
+}
+}  // namespace FprimePython
+
 namespace pybind11 {
 namespace detail {
 
@@ -48,10 +71,7 @@ namespace detail {
 // specialization casts them all. Fw::StringBase itself is not an instantiation and is specialized separately
 // below.
 //
-// Fw::StringBase::operator=(const char*) copies with string_copy and silently drops whatever does not fit, so an
-// over-capacity Python str is rejected here rather than stored truncated: a truncated path or command argument
-// would otherwise be used for logic with no indication to the caller. Returning false makes pybind11 raise
-// TypeError against the declared "str" signature.
+// A Python str that does not fit the instantiation's capacity is rejected with ValueError, see check_string_fits.
 template <Fw::StringBase::SizeType size>
 struct type_caster<Fw::StringTemplate<size>> {
     PYBIND11_TYPE_CASTER(Fw::StringTemplate<size>, io_name("str", "str"));
@@ -65,10 +85,7 @@ struct type_caster<Fw::StringTemplate<size>> {
     bool load(handle src, bool convert) {
         if (pybind11::isinstance<pybind11::str>(src)) {
             std::string s = src.cast<std::string>();
-            // The capacity includes the terminator, so a string of exactly the capacity does not fit
-            if (s.length() >= value.getCapacity()) {
-                return false;
-            }
+            FprimePython::check_string_fits(s, value.getCapacity());
             value = s.c_str();
             return true;
         }
@@ -79,6 +96,11 @@ struct type_caster<Fw::StringTemplate<size>> {
 // This will bind Fw::StringBase itself into the python layer. Since StringBase cannot be instantiated directly,
 // Fw::String is used as the concrete type for the value member, which provides a backing store for the Python string
 // to be copied into and then passed out as a StringBase reference.
+//
+// The check here is against the Fw::String backing store only; the argument is then handled as F Prime handles a
+// C++ caller's: an event or telemetry string is serialized up to the size declared in the model, and a port
+// argument is passed on as is. Struct, array and inline-array string members are checked against their own
+// capacity by the generated setters.
 template <>
 struct type_caster<Fw::StringBase> {
   protected:
@@ -111,10 +133,7 @@ struct type_caster<Fw::StringBase> {
     bool load(handle src, bool convert) {
         if (pybind11::isinstance<pybind11::str>(src)) {
             std::string s = src.cast<std::string>();
-            // Rejected rather than truncated, for the reason given on the StringTemplate caster above
-            if (s.length() >= value.getCapacity()) {
-                return false;
-            }
+            FprimePython::check_string_fits(s, value.getCapacity());
             value = s.c_str();
             return true;
         }

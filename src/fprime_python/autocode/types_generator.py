@@ -28,7 +28,7 @@ class ArrayBindingGenerator(BindingGenerator):
     pybind11::class_<Ref::PyArray>(m, "PyArray")
         .def(pybind11::init<>())
         .def("__getitem__", [](const Ref::PyArray &a, int index) {
-            if (index >= Ref::PyArray::SIZE) {
+            if (index < 0 || static_cast<FwSizeType>(index) >= Ref::PyArray::SIZE) {
                 throw std::out_of_range("array index out of bounds");
             }
             return a[index];
@@ -81,7 +81,8 @@ class ArrayBindingGenerator(BindingGenerator):
             getter, setter_value, setter = (
                 "return std::string(array[index].toChar());",
                 "const std::string &value",
-                "array[index] = value.c_str();",
+                "FprimePython::check_string_fits(value, array[index].getCapacity());\n"
+                "    array[index] = value.c_str();",
             )
         else:
             getter, setter_value, setter = (
@@ -194,6 +195,18 @@ STRUCT_MEMBER_TEMPLATE = """.def_property("{name}", {getter_cast}(&{fqn}::get_{n
 .def("get_{name}", {getter_cast}(&{fqn}::get_{name}))
 .def("set_{name}", &{fqn}::set_{name})"""
 
+#: Setter of a string member. F Prime's own setter copies into the member's fixed-capacity storage and drops
+#: whatever does not fit, so the length is checked against that storage first.
+STRUCT_STRING_SETTER_TEMPLATE = """[]({fqn}& self, const std::string& value) {{
+    FprimePython::check_string_fits(value, self.get_{name}().getCapacity());
+    self.get_{name}() = value.c_str();
+}}"""
+
+#: Property and explicit accessors bound for one string struct member
+STRUCT_STRING_MEMBER_TEMPLATE = """.def_property("{name}", {getter_cast}(&{fqn}::get_{name}), {setter})
+.def("get_{name}", {getter_cast}(&{fqn}::get_{name}))
+.def("set_{name}", {setter})"""
+
 #: Getter of an inline array member, copying the elements out into a new Python list
 STRUCT_INLINE_ARRAY_GETTER_TEMPLATE = """[](const {fqn}& self) {{
     pybind11::list items;
@@ -219,7 +232,7 @@ STRUCT_INLINE_ARRAY_SETTER_TEMPLATE = """[]({fqn}& self, const pybind11::sequenc
             converted.push_back(items[i].cast<{element_cpp_type}>());
         }} catch (const pybind11::cast_error&) {{
             throw pybind11::type_error("{name}[" + std::to_string(i) + "] is not convertible to {element_python_type}");
-        }}
+        }}{element_check}
     }}
     for (std::size_t i = 0; i < size; i++) {{
         self.get_{name}()[i] = {element_from_cpp};
@@ -277,6 +290,14 @@ class StructBindingGenerator(BindingGenerator):
         """ Whether any member is an inline array: the struct's `sizes` map holds an entry for each """
         return bool(self.struct_type.sizes)
 
+    @property
+    def has_string_members(self) -> bool:
+        """ Whether any member is a string, whose setter is bound through a length-checking lambda """
+        return any(
+            isinstance(member_type.underlying_type, fpp.Type.String)
+            for _, member_type in self.struct_type.anon_struct.members
+        )
+
     def scalar_member(self, name: str, member_type: fpp.Type.Variant) -> str:
         """ The bindings of one member that is not an inline array
 
@@ -292,6 +313,11 @@ class StructBindingGenerator(BindingGenerator):
             fqn=self.cpp_fqn,
             const_qualifier=" const" if is_const else "",
         )
+        if isinstance(member_type.underlying_type, fpp.Type.String):
+            setter = STRUCT_STRING_SETTER_TEMPLATE.format(name=name, fqn=self.cpp_fqn)
+            return STRUCT_STRING_MEMBER_TEMPLATE.format(
+                name=name, fqn=self.cpp_fqn, getter_cast=getter_cast, setter=setter
+            )
         return STRUCT_MEMBER_TEMPLATE.format(name=name, fqn=self.cpp_fqn, getter_cast=getter_cast)
 
     def inline_array_member(self, name: str, element_type: fpp.Type.Variant) -> str:
@@ -310,9 +336,13 @@ class StructBindingGenerator(BindingGenerator):
         """
         fqn = self.cpp_fqn
         element_name = type_name(element_type, StringClass.STRUCT_MEMBER)
+        element_check = ""
         if isinstance(element_type.underlying_type, fpp.Type.String):
             to_python, cpp_type, from_cpp, python_type = (
                 "pybind11::str(item.toChar())", "std::string", "converted[i].c_str()", "str"
+            )
+            element_check = (
+                f"\n        FprimePython::check_string_fits(converted[i], self.get_{name}()[i].getCapacity());"
             )
         elif isinstance(element_type.underlying_type, fpp.Type.Enum):
             to_python, cpp_type, from_cpp, python_type = (
@@ -337,6 +367,7 @@ class StructBindingGenerator(BindingGenerator):
             element_cpp_type=cpp_type,
             element_from_cpp=from_cpp,
             element_python_type=python_type,
+            element_check=element_check,
         )
         return STRUCT_INLINE_ARRAY_MEMBER_TEMPLATE.format(name=name, getter=getter, setter=setter)
 
@@ -354,6 +385,8 @@ class StructBindingGenerator(BindingGenerator):
 
     def cpp_system_includes(self) -> List[str]:
         """ Get any system includes required by this type generator """
-        if not self.has_inline_arrays:
-            return []
-        return ["cstddef", "string", "type_traits", "vector"]
+        if self.has_inline_arrays:
+            return ["cstddef", "string", "type_traits", "vector"]
+        if self.has_string_members:
+            return ["string"]
+        return []
