@@ -116,9 +116,10 @@ struct type_caster<Fw::StringTemplate<size>> {
 // Fw::String is used as the concrete type for the value member, which provides a backing store for the Python string
 // to be copied into and then passed out as a StringBase reference.
 //
-// The check here is against the Fw::String backing store only, as the declared size of the argument is not known
-// here. The generated bindings of ports, events and telemetry check that size with check_declared_size, and the
-// generated setters check struct, array and inline-array string members against their own capacity.
+// The check here is against the Fw::String backing store only, as the size the argument is serialized at is not
+// known here. The generated bindings of ports, events and telemetry check that size (the declared size, capped for
+// events and telemetry) with check_declared_size, and the generated setters check struct, array and inline-array
+// string members against their own capacity.
 template <>
 struct type_caster<Fw::StringBase> {
   protected:
