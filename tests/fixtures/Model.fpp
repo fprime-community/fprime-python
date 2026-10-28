@@ -12,9 +12,26 @@ module Fixture {
     tags: [2] string size 4
   }
 
+  @ Port returning a sized string
+  port Ask -> string size 8
+
   @ fprime-python
   passive component PyComp {
     sync input port textIn: Text
+    sync input port askIn: Ask
+    output port textOut: Text
+    event port logOut
+    text event port logTextOut
+    time get port timeGetOut
+    telemetry port tlmOut
+    event Said(msg: string size 12) severity activity low format "{}"
+    telemetry Last: string size 6
+  }
+
+  @ fprime-python
+  queued component PyQueued {
+    async input port textIn: Text
+    internal port poke(msg: string size 5)
   }
 
   instance pyComp: PyComp base id 0x100

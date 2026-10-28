@@ -11,7 +11,7 @@ them, and the checks that reject a model this autocoder cannot bind.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import fpp
 
@@ -47,6 +47,22 @@ def is_annotated(node: fpp.ast.AstNode, annotation: str) -> bool:
     return annotation in list(node.pre_annotation) + list(node.post_annotation)
 
 
+def declared_string_size(type_: Optional[fpp.Type.Variant]) -> Optional[int]:
+    """ The `string size` a type declares, looking through aliases
+
+    Args:
+        type_: The resolved type, None for a port that returns nothing
+    Returns:
+        The declared size in bytes, or None when the type is not a string or is a string of default size
+    """
+    if type_ is None:
+        return None
+    underlying = type_.underlying_type
+    if isinstance(underlying, fpp.Type.String):
+        return underlying.value
+    return None
+
+
 class FormalParameterView:
     """ One formal parameter of a port, command or event """
 
@@ -64,6 +80,11 @@ class FormalParameterView:
     def cpp_type(self) -> str:
         """ The parameter's C++ type, reference qualifiers included """
         return formal_parameter_type(self.param, self.string_class)
+
+    @property
+    def declared_size(self) -> Optional[int]:
+        """ The parameter's declared `string size`, None unless it is a string of explicit size """
+        return declared_string_size(self.param.type_name.resolved_type)
 
 
 class UnsupportedModelError(Exception):
@@ -105,6 +126,11 @@ class HandlerView(ABC):
     def handler_return_type(self) -> str:
         """ The C++ return type of the handler; only a port can return a value """
         return "void"
+
+    @property
+    def return_declared_size(self) -> Optional[int]:
+        """ The declared `string size` of the handler's return value, None unless it returns a sized string """
+        return None
 
     @property
     def handler_parameters(self) -> List[Sequence[str]]:
@@ -192,6 +218,12 @@ class PortView(HandlerView):
         return_type_name = self.definition.return_type
         resolved = None if return_type_name is None else return_type_name.resolved_type
         return value_type(resolved, StringClass.PORT_RETURN)
+
+    @property
+    def return_declared_size(self) -> Optional[int]:
+        """ The declared `string size` of the port's return value, None unless it returns a sized string """
+        return_type_name = self.definition.return_type
+        return declared_string_size(None if return_type_name is None else return_type_name.resolved_type)
 
 
 class InternalPortView(HandlerView):
@@ -291,6 +323,11 @@ class EventView:
         """ The name of the method F Prime declares to send this event """
         return f"log_{self.severity_token}_{self.name}"
 
+    @property
+    def parameters(self) -> List[FormalParameterView]:
+        """ The event's formal parameters, in declaration order """
+        return [FormalParameterView(param, StringClass.PORT) for param in self.event.node.params]
+
 
 class ChannelView:
     """ One telemetry channel of a component """
@@ -308,6 +345,11 @@ class ChannelView:
     def write_name(self) -> str:
         """ The name of the method F Prime declares to write this channel """
         return f"tlmWrite_{self.name}"
+
+    @property
+    def declared_size(self) -> Optional[int]:
+        """ The channel's declared `string size`, None unless it is a string of explicit size """
+        return declared_string_size(self.channel.channel_type)
 
 
 class ParameterView:

@@ -89,3 +89,26 @@ def test_unannotated_deployment_of_python_components_is_rejected(
     error = capsys.readouterr().err
     assert "Deployment topology Fixture.Unannotated" in error
     assert "Fixture.pyComp" in error
+
+
+def test_sized_string_arguments_are_checked_against_their_declared_size(files: Dict[str, str]) -> None:
+    source = files["PyCompBindingAc.cpp"]
+    port = "FprimePython::check_declared_size(msg, 16);"
+    assert port in source
+    assert source.index(port) < source.index("return self.textOut_out(portNum, msg);")
+    assert "FprimePython::check_declared_size(msg, 12);" in source
+    assert "return self.log_ACTIVITY_LO_Said(msg);" in source
+    assert "FprimePython::check_declared_size(arg, 6);" in source
+    assert "&Fixture::PyComp::textOut_out" not in source
+    assert "&Fixture::PyComp::isConnected_textOut_OutputPort" in source
+    internal = files["PyQueuedBindingAc.cpp"]
+    assert "FprimePython::check_declared_size(msg, 5);" in internal
+    assert "return self.poke_internalInterfaceInvoke(msg);" in internal
+
+
+def test_sized_string_return_is_checked_against_its_declared_size(files: Dict[str, str]) -> None:
+    source = files["PyComp.cpp"]
+    check = "FprimePython::check_declared_size(result, 8);"
+    assert check in source
+    assert source.index("Fw::String result = return_value.cast<Fw::String>();") < source.index(check)
+    assert source.index(check) < source.index("return result;")

@@ -61,6 +61,22 @@ inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType
                                     std::to_string(capacity - 1) + " bytes");
     }
 }
+
+//! \brief Reject a string longer than the size the model declares for it
+//!
+//! A port, event or telemetry string reaches C++ as an Fw::StringBase that check_string_fits has bounded only by
+//! its scratch capacity, while F Prime serializes it at the model's `string size`, dropping the excess. The
+//! generated bindings call this with that declared size so that such a string is refused instead.
+//!
+//! \param value The string received from Python
+//! \param size The declared `string size`, in bytes, terminator excluded
+inline void check_declared_size(const Fw::StringBase& value, FwSizeType size) {
+    if (static_cast<FwSizeType>(value.length()) > size) {
+        throw pybind11::value_error("string of " + std::to_string(value.length()) +
+                                    " UTF-8 bytes exceeds its declared string size of " + std::to_string(size) +
+                                    " bytes");
+    }
+}
 }  // namespace FprimePython
 
 namespace pybind11 {
