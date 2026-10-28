@@ -150,15 +150,16 @@ A Python `str` copied into an F Prime string must fit that string's storage and 
   and strings returned from a Python port handler are checked against their declared `string size`.
 - Event string arguments and telemetry channels are checked against the smaller of their size (declared, or
   `FW_FIXED_LENGTH_STRING_SIZE` by default) and `FW_LOG_STRING_MAX_SIZE` or `FW_TLM_STRING_MAX_SIZE`, the sizes
-  F Prime serializes them at.
+  F Prime serializes them at. With the default configuration that is 200 bytes for an event string and 40 bytes for a
+  telemetry string, even one with no declared size; F Prime itself would truncate the excess.
 - Every string is also checked against the capacity of the F Prime string class that carries it, which is the only
   bound on a port string with no declared size: `FW_FIXED_LENGTH_STRING_SIZE` for port strings and
   `FW_INTERNAL_INTERFACE_STRING_MAX_SIZE` for internal ports.
 
 A `ValueError` raised in a Python handler, such as a port handler returning a `str` that is too long, is not caught by
 the generated C++. When an F Prime thread made the call it ends the process; when Python code started the call it
-reaches that code, but any guarded input port it passed through is left locked. Check string lengths in Python where
-the input is not trusted.
+reaches that code, but any guarded input port it passed through is left locked, so the next call to that port blocks
+forever. Do not catch such an error and carry on; check string lengths in Python where the input is not trusted.
 
 ## Development
 
