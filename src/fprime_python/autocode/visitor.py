@@ -136,12 +136,16 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
         """ Generate topology bindings when an annotated topology node is visited
 
         A topology holds Python-bound component instances, and Python needs a handle on those instances
-        and on the topology's own setup and teardown, so an annotated topology is bound as a whole.
+        and on the topology's own setup and teardown, so an annotated topology is bound as a whole. An
+        unannotated deployment topology that instantiates Python-bound components is refused, since nothing
+        could start it from Python.
         """
-        if not is_annotated(node, FPRIME_PYTHON_ANNOTATION):
-            return
         symbol = self.symbol_of(node)
         topology = self.analysis.topology_map[symbol]
+        if not is_annotated(node, FPRIME_PYTHON_ANNOTATION):
+            # Python cannot start a deployment of Python components without the binding
+            TopologyView(topology).check_unannotated(FPRIME_PYTHON_ANNOTATION)
+            return
         # Refuse up front rather than generating a source file that names a header F Prime never wrote
         TopologyView(topology).check_supported()
         self.emit(TopologyBindingGenerator(self.include_manager, symbol, topology).files())

@@ -108,7 +108,11 @@ class HandlerView(ABC):
 
     @property
     def handler_parameters(self) -> List[Sequence[str]]:
-        """ Every parameter of the handler, prefix first, for a C++ declaration """
+        """ Every parameter of the handler, prefix first, for a C++ declaration
+
+        Prefix parameters are (C++ type, name, doc comment) triples; the member's own parameters have no doc
+        comment and are (C++ type, name) pairs.
+        """
         return list(self.HANDLER_PREFIX) + [
             (param.cpp_type, param.name) for param in self.parameters
         ]
@@ -592,6 +596,29 @@ class TopologyView:
                 f"Topology {self.fpp_name} is not a deployment topology, so F Prime generates no setup and"
                 f" teardown for it and there is nothing for fprime-python to bind. Declare it"
                 f" `deployment topology {self.name}` to bind it."
+            )
+
+    def check_unannotated(self, annotation: str) -> None:
+        """ Reject an unannotated deployment topology that instantiates Python-bound components
+
+        Only an annotated topology gets the setup and teardown bindings the Python runner starts a deployment
+        with, so a deployment of Python components without the annotation would build and then fail at
+        startup.
+
+        Args:
+            annotation: The annotation the topology lacks, and that marks a component as Python-bound
+        Raises:
+            UnsupportedModelError: The topology is a deployment and instantiates Python-bound components
+        """
+        if not self.node.is_deployment:
+            return
+        instances = self.bound_instances(annotation)
+        if instances:
+            names = ", ".join(instance.qualified_name for instance in instances)
+            raise UnsupportedModelError(
+                f"Deployment topology {self.fpp_name} instantiates @{annotation} components ({names}) but is"
+                f" not annotated @{annotation}, so Python would have no setup or teardown to start it with."
+                f" Annotate the topology with @{annotation}."
             )
 
     def bound_instances(self, annotation: str) -> List[fpp.InterfaceInstance.Component]:
