@@ -15,6 +15,9 @@ module Fixture {
   @ Port returning a sized string
   port Ask -> string size 8
 
+  @ Sized string reached through an alias
+  type Label = string size 6
+
   @ fprime-python
   passive component PyComp {
     sync input port textIn: Text
@@ -25,7 +28,9 @@ module Fixture {
     time get port timeGetOut
     telemetry port tlmOut
     event Said(msg: string size 12) severity activity low format "{}"
-    telemetry Last: string size 6
+    event Spoke(msg: string) severity activity low format "{}"
+    telemetry Last: Label
+    telemetry Any: string
   }
 
   @ fprime-python

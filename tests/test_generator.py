@@ -96,9 +96,17 @@ def test_sized_string_arguments_are_checked_against_their_declared_size(files: D
     port = "FprimePython::check_declared_size(msg, 16);"
     assert port in source
     assert source.index(port) < source.index("return self.textOut_out(portNum, msg);")
-    assert "FprimePython::check_declared_size(msg, 12);" in source
+    log = "static_cast<FwSizeType>(FW_LOG_STRING_MAX_SIZE)"
+    tlm = "static_cast<FwSizeType>(FW_TLM_STRING_MAX_SIZE)"
+    assert f"FprimePython::check_declared_size(msg, FW_MIN({log}, static_cast<FwSizeType>(12)));" in source
     assert "return self.log_ACTIVITY_LO_Said(msg);" in source
-    assert "FprimePython::check_declared_size(arg, 6);" in source
+    unsized = "static_cast<FwSizeType>(FW_FIXED_LENGTH_STRING_SIZE)"
+    assert f"FprimePython::check_declared_size(msg, FW_MIN({log}, {unsized}));" in source
+    assert "return self.log_ACTIVITY_LO_Spoke(msg);" in source
+    channel = f"FprimePython::check_declared_size(arg, FW_MIN({tlm}, static_cast<FwSizeType>(6)));"
+    assert channel in source
+    assert source.index(channel) < source.index("self.tlmWrite_Last(arg, _tlmTime);")
+    assert f"FprimePython::check_declared_size(arg, FW_MIN({tlm}, {unsized}));" in source
     assert "&Fixture::PyComp::textOut_out" not in source
     assert "&Fixture::PyComp::isConnected_textOut_OutputPort" in source
     internal = files["PyQueuedBindingAc.cpp"]

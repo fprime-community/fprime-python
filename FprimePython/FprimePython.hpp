@@ -65,15 +65,16 @@ inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType
 //! \brief Reject a string longer than the size the model declares for it
 //!
 //! A port, event or telemetry string reaches C++ as an Fw::StringBase that check_string_fits has bounded only by
-//! its scratch capacity, while F Prime serializes it at the model's `string size`, dropping the excess. The
-//! generated bindings call this with that declared size so that such a string is refused instead.
+//! its scratch capacity, while F Prime serializes it at the model's `string size`, dropping the excess. Event and
+//! telemetry strings are further capped at FW_LOG_STRING_MAX_SIZE and FW_TLM_STRING_MAX_SIZE. The generated
+//! bindings call this with the size F Prime serializes the string at, so that such a string is refused instead.
 //!
 //! \param value The string received from Python
-//! \param size The declared `string size`, in bytes, terminator excluded
+//! \param size The size the string is serialized at, in bytes, terminator excluded
 inline void check_declared_size(const Fw::StringBase& value, FwSizeType size) {
     if (static_cast<FwSizeType>(value.length()) > size) {
         throw pybind11::value_error("string of " + std::to_string(value.length()) +
-                                    " UTF-8 bytes exceeds its declared string size of " + std::to_string(size) +
+                                    " UTF-8 bytes exceeds its maximum size of " + std::to_string(size) +
                                     " bytes");
     }
 }
@@ -113,10 +114,9 @@ struct type_caster<Fw::StringTemplate<size>> {
 // Fw::String is used as the concrete type for the value member, which provides a backing store for the Python string
 // to be copied into and then passed out as a StringBase reference.
 //
-// The check here is against the Fw::String backing store only; the argument is then handled as F Prime handles a
-// C++ caller's: an event or telemetry string is serialized up to the size declared in the model, and a port
-// argument is passed on as is. Struct, array and inline-array string members are checked against their own
-// capacity by the generated setters.
+// The check here is against the Fw::String backing store only, as the declared size of the argument is not known
+// here. The generated bindings of ports, events and telemetry check that size with check_declared_size, and the
+// generated setters check struct, array and inline-array string members against their own capacity.
 template <>
 struct type_caster<Fw::StringBase> {
   protected:

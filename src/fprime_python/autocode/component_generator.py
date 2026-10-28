@@ -29,38 +29,57 @@ TELEMETRY_DEF_TEMPLATE = (
 )
 
 
-#: A sized string channel is written through a lambda that checks the declared size first
+#: A sized string channel is written through a lambda that first checks the size F Prime serializes it at
 CHECKED_TELEMETRY_DEF_TEMPLATE = """.def("{name}", []({fqn}& self, const Fw::StringBase& arg, Fw::Time _tlmTime) {{
     FprimePython::check_declared_size(arg, {size});
     self.{name}(arg, _tlmTime);
 }}, pybind11::arg("arg"), pybind11::arg("_tlmTime") = Fw::Time())"""
 
 
+def serialized_size(size: str, cap: Optional[str]) -> str:
+    """ The C++ expression for the size F Prime serializes a string of `size` at
+
+    Event and telemetry strings are further capped by a configuration constant, as in the code fpp-to-cpp generates.
+    """
+    return size if cap is None else f"FW_MIN(static_cast<FwSizeType>({cap}), static_cast<FwSizeType>({size}))"
+
+
 def checked_def(
-    name: str, fqn: str, prefix: Sequence[Tuple[str, str, str]], params: Sequence[FormalParameterView]
+    name: str,
+    fqn: str,
+    prefix: Sequence[Tuple[str, str, str]],
+    params: Sequence[FormalParameterView],
+    cap: Optional[str] = None,
 ) -> Optional[str]:
     """ Get a binding that checks each sized string argument against its declared size before the call
 
     Port, event and internal-port strings are converted into a scratch F Prime string bounded only by its
-    own capacity, and F Prime later serializes them at their declared size, dropping the excess. A method
-    taking such a string is therefore bound through a lambda that rejects an over-long one first.
+    own capacity, and F Prime later serializes them at their declared size, dropping the excess. Event strings
+    are further capped at `cap`, which bounds even a string of default size. A method taking such a string is
+    therefore bound through a lambda that rejects an over-long one first.
 
     Args:
         name: The name of the method, in C++ and in Python
         fqn: The fully qualified C++ name of the class the method belongs to
         prefix: The method's leading parameters that are not modeled, as (C++ type, name, doc) triples
         params: The method's modeled parameters, in call order
+        cap: The configuration constant that also bounds the method's strings, None when only the declared size does
     Returns:
-        The pybind11 `.def(...)` call, or None when no argument is a string of declared size
+        The pybind11 `.def(...)` call, or None when no argument needs a check
     """
-    sized = [param for param in params if param.declared_size is not None]
+    sizes = {
+        param.name: param.string_size if cap is not None else (None if param.declared_size is None else str(param.declared_size))
+        for param in params
+    }
+    sized = [param for param in params if sizes[param.name] is not None]
     if not sized:
         return None
     declarations = [f"{cpp_type} {arg}" for cpp_type, arg, _ in prefix]
     declarations += [f"{param.cpp_type} {param.name}" for param in params]
     arguments = [arg for _, arg, _ in prefix] + [param.name for param in params]
     checks = "".join(
-        f"    FprimePython::check_declared_size({param.name}, {param.declared_size});\n" for param in sized
+        f"    FprimePython::check_declared_size({param.name}, {serialized_size(str(sizes[param.name]), cap)});\n"
+        for param in sized
     )
     return (
         f'.def("{name}", []({fqn}& self, {", ".join(declarations)}) {{\n'
@@ -123,13 +142,13 @@ class ComponentBindingGenerator(BindingGenerator):
         """ Write the pybind11 statements binding this component """
         fqn = self.cpp_fqn
         component = self.component
-        signatures: Dict[str, Tuple[Sequence[Tuple[str, str, str]], List[FormalParameterView]]] = {}
+        signatures: Dict[str, Tuple[Sequence[Tuple[str, str, str]], List[FormalParameterView], Optional[str]]] = {}
         for port in component.output_ports:
-            signatures[port.invoker_name] = (port.HANDLER_PREFIX, port.parameters)
+            signatures[port.invoker_name] = (port.HANDLER_PREFIX, port.parameters, None)
         for internal in component.internal_ports:
-            signatures[internal.invoker_name] = (internal.HANDLER_PREFIX, internal.parameters)
+            signatures[internal.invoker_name] = (internal.HANDLER_PREFIX, internal.parameters, None)
         for event in component.events:
-            signatures[event.dispatch_name] = ((), event.parameters)
+            signatures[event.dispatch_name] = ((), event.parameters, "FW_LOG_STRING_MAX_SIZE")
         links = []
         for method in base_class_methods(component):
             checked = checked_def(method, fqn, *signatures[method]) if method in signatures else None
@@ -142,8 +161,10 @@ class ComponentBindingGenerator(BindingGenerator):
         ]
         links += [
             TELEMETRY_DEF_TEMPLATE.format(name=channel.write_name, fqn=fqn)
-            if channel.declared_size is None
-            else CHECKED_TELEMETRY_DEF_TEMPLATE.format(name=channel.write_name, fqn=fqn, size=channel.declared_size)
+            if channel.string_size is None
+            else CHECKED_TELEMETRY_DEF_TEMPLATE.format(
+                name=channel.write_name, fqn=fqn, size=serialized_size(channel.string_size, "FW_TLM_STRING_MAX_SIZE")
+            )
             for channel in self.component.channels
         ]
         body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))

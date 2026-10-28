@@ -146,11 +146,13 @@ A Python `str` copied into an F Prime string must fit that string's storage and 
 `ValueError` rather than being stored truncated. Storage is counted in bytes of UTF-8 encoding, so check
 `len(s.encode())`, not `len(s)`: a `string size 8` holds at most 8 bytes.
 
-- Struct members, array elements, inline array elements and telemetry channels, the string arguments of output
-  ports, internal ports and events, and strings returned from a Python port handler are checked against their
-  declared `string size`.
+- Struct members, array elements, inline array elements, the string arguments of output ports and internal ports,
+  and strings returned from a Python port handler are checked against their declared `string size`.
+- Event string arguments and telemetry channels are checked against the smaller of their size (declared, or
+  `FW_FIXED_LENGTH_STRING_SIZE` by default) and `FW_LOG_STRING_MAX_SIZE` or `FW_TLM_STRING_MAX_SIZE`, the sizes
+  F Prime serializes them at.
 - Every string is also checked against the capacity of the F Prime string class that carries it, which is the only
-  bound on a string with no declared size: `FW_FIXED_LENGTH_STRING_SIZE` for port, event and telemetry strings and
+  bound on a port string with no declared size: `FW_FIXED_LENGTH_STRING_SIZE` for port strings and
   `FW_INTERNAL_INTERFACE_STRING_MAX_SIZE` for internal ports.
 
 A `ValueError` raised in a Python handler, such as a port handler returning a `str` that is too long, is not caught by

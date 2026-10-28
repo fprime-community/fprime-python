@@ -63,6 +63,18 @@ def declared_string_size(type_: Optional[fpp.Type.Variant]) -> Optional[int]:
     return None
 
 
+def string_size_expression(type_: Optional[fpp.Type.Variant]) -> Optional[str]:
+    """ The C++ expression for the size a string type holds, `FW_FIXED_LENGTH_STRING_SIZE` when it declares none
+
+    Returns:
+        The size expression, or None when the type is not a string
+    """
+    if type_ is None or not isinstance(type_.underlying_type, fpp.Type.String):
+        return None
+    size = declared_string_size(type_)
+    return "FW_FIXED_LENGTH_STRING_SIZE" if size is None else str(size)
+
+
 class FormalParameterView:
     """ One formal parameter of a port, command or event """
 
@@ -85,6 +97,11 @@ class FormalParameterView:
     def declared_size(self) -> Optional[int]:
         """ The parameter's declared `string size`, None unless it is a string of explicit size """
         return declared_string_size(self.param.type_name.resolved_type)
+
+    @property
+    def string_size(self) -> Optional[str]:
+        """ The C++ expression for the size of the parameter's string, None unless it is a string """
+        return string_size_expression(self.param.type_name.resolved_type)
 
 
 class UnsupportedModelError(Exception):
@@ -350,6 +367,11 @@ class ChannelView:
     def declared_size(self) -> Optional[int]:
         """ The channel's declared `string size`, None unless it is a string of explicit size """
         return declared_string_size(self.channel.channel_type)
+
+    @property
+    def string_size(self) -> Optional[str]:
+        """ The C++ expression for the size of the channel's string, None unless it is a string """
+        return string_size_expression(self.channel.channel_type)
 
 
 class ParameterView:
