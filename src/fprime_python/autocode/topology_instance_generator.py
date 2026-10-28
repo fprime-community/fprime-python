@@ -42,10 +42,10 @@ TOPOLOGY_FUNCTION_TEMPLATE = """m.def("{action}", &{namespace}::{action},
     pybind11::arg("state"), pybind11::call_guard<pybind11::gil_scoped_release>());"""
 
 #: Read-only accessor for one bound component instance. The instance exists for the whole life of the
-#: process but only mirrors a Python object once the topology has initialized it.
+#: process but only mirrors a Python object between the topology's setup and teardown.
 INSTANCE_TEMPLATE = """.def_property_readonly_static("{name}",
     [](pybind11::object /* cls */) {{
-        if ({qualified_name}.{self_member}) {{
+        if ({qualified_name}.{self_member} && !{qualified_name}.{self_member}.is_none()) {{
             return {qualified_name}.{self_member};
         }}
         throw std::runtime_error("Instance {qualified_name} is not initialized");

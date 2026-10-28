@@ -205,7 +205,7 @@ PYTHON_PORT_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
 PYTHON_COMMAND_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
         """ Handle the {name} command """
         # TODO: Implement command handler
-        self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.OK))
+        self.cmdResponse_out({prefix}, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.OK))
 '''
 
 
@@ -336,7 +336,7 @@ class ComponentImplementationGenerator(object):
             deinit = cls.function(
                 "deinit",
                 override=True,
-                comment="Release the mirrored Python object",
+                comment="Release the mirrored Python object and deinitialize the base class",
             )
             self._write_deinit(deinit.body)
 
@@ -477,7 +477,10 @@ class ComponentImplementationGenerator(object):
             if isinstance(handler, CommandView):
                 stubs.append(
                     PYTHON_COMMAND_HANDLER_TEMPLATE.format(
-                        handler=handler.handler_name, name=handler.name, args=args
+                        handler=handler.handler_name,
+                        name=handler.name,
+                        args=args,
+                        prefix=", ".join(name for _, name, _ in handler.HANDLER_PREFIX),
                     )
                 )
                 continue
