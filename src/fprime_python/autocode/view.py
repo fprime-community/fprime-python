@@ -616,9 +616,9 @@ class TopologyView:
         if instances:
             names = ", ".join(instance.qualified_name for instance in instances)
             raise UnsupportedModelError(
-                f"Deployment topology {self.fpp_name} instantiates @{annotation} components ({names}) but is"
-                f" not annotated @{annotation}, so Python would have no setup or teardown to start it with."
-                f" Annotate the topology with @{annotation}."
+                f"Deployment topology {self.fpp_name} instantiates '@ {annotation}' components ({names}) but"
+                f" is not annotated '@ {annotation}', so Python would have no setup or teardown to start it"
+                f" with. Annotate the topology with '@ {annotation}'."
             )
 
     def bound_instances(self, annotation: str) -> List[fpp.InterfaceInstance.Component]:
