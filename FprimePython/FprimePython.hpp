@@ -56,9 +56,9 @@ inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType
     }
     // The capacity includes the terminator, so a string of exactly the capacity does not fit
     if (value.length() >= capacity) {
-        throw pybind11::value_error("string of length " + std::to_string(value.length()) +
-                                    " exceeds the F Prime string maximum of " +
-                                    std::to_string(capacity - 1) + " characters");
+        throw pybind11::value_error("string of " + std::to_string(value.length()) +
+                                    " UTF-8 bytes exceeds the F Prime string maximum of " +
+                                    std::to_string(capacity - 1) + " bytes");
     }
 }
 }  // namespace FprimePython

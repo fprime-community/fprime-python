@@ -34,7 +34,7 @@ def test_array_string_element_is_length_checked(files: Dict[str, str]) -> None:
 
 def test_struct_string_member_setter_is_length_checked(files: Dict[str, str]) -> None:
     source = files["RecordBindingAc.cpp"]
-    assert "FprimePython::check_string_fits(value, self.get_label().getCapacity());" in source
+    assert "FprimePython::check_string_fits(text, self.get_label().getCapacity());" in source
     assert "&Fixture::Record::set_label" not in source
 
 
@@ -55,6 +55,14 @@ def test_annotated_deployment_is_bound(files: Dict[str, str]) -> None:
     assert 'm.def("setup", &Fixture::setup' in source
     assert 'm.def("teardown", &Fixture::teardown' in source
     assert '"pyComp"' in source
+
+
+def test_topologies_needing_no_annotation_are_accepted(files: Dict[str, str]) -> None:
+    # The fixture model also holds an unannotated deployment of C++ instances and an unannotated
+    # non-deployment topology of Python instances; generating it at all shows neither is refused
+    assert "PlainBindingAc.cpp" not in files
+    assert "SubBindingAc.cpp" not in files
+    assert "AnnotatedBindingAc.cpp" in files
 
 
 def test_unannotated_deployment_of_python_components_is_rejected(

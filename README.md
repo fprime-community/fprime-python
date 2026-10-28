@@ -142,22 +142,29 @@ type is an FPP `array`, which are bound by reference and can be modified in plac
 
 ### Strings
 
-A Python `str` passed to F Prime must fit the F Prime string it is copied into: no more characters than the string's
-capacity allows (its declared `string size`, or the default size for an unsized string) and no NUL characters. A `str`
-that does not fit raises `ValueError` rather than being stored truncated. This applies to struct members, array
-elements, inline array elements, and every string argument and return value. Event and telemetry string arguments are
-then serialized up to their declared size, as they are for a C++ caller.
+A Python `str` copied into an F Prime string must fit that string's storage and contain no NUL characters, or it raises
+`ValueError` rather than being stored truncated. Storage is counted in bytes of UTF-8 encoding, so check
+`len(s.encode())`, not `len(s)`: a `string size 8` holds at most 8 bytes.
+
+- Struct members, array elements and inline array elements are checked against their declared `string size`.
+- Command, internal port and parameter strings are checked against the capacity of their F Prime string class
+  (e.g. `FW_INTERNAL_INTERFACE_STRING_MAX_SIZE`).
+- Event, telemetry and port string arguments, and port string return values, are checked only against `Fw::String`
+  (at most `FW_FIXED_LENGTH_STRING_SIZE` bytes), whatever their declared size. Events, telemetry and async ports then
+  serialize them up to their declared size, truncating a longer string as they do for a C++ caller.
 
 A `ValueError` raised in a Python handler, such as a port handler returning a `str` that is too long, is not caught by
 the generated C++ and ends the process. Check string lengths in Python where the input is not trusted.
 
 ## Development
 
-Install the autocoder and its check dependencies into a virtual environment, then run the type check:
+Install the autocoder and its check dependencies into a virtual environment, then run the type check and the
+generator tests:
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m mypy
+.venv/bin/python -m pytest tests
 ```
 
 ## TODO: custom bindings

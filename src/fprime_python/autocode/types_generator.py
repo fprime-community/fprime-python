@@ -197,9 +197,10 @@ STRUCT_MEMBER_TEMPLATE = """.def_property("{name}", {getter_cast}(&{fqn}::get_{n
 
 #: Setter of a string member. F Prime's own setter copies into the member's fixed-capacity storage and drops
 #: whatever does not fit, so the length is checked against that storage first.
-STRUCT_STRING_SETTER_TEMPLATE = """[]({fqn}& self, const std::string& value) {{
-    FprimePython::check_string_fits(value, self.get_{name}().getCapacity());
-    self.get_{name}() = value.c_str();
+STRUCT_STRING_SETTER_TEMPLATE = """[]({fqn}& self, const pybind11::str& value) {{
+    const std::string text = value.cast<std::string>();
+    FprimePython::check_string_fits(text, self.get_{name}().getCapacity());
+    self.get_{name}() = text.c_str();
 }}"""
 
 #: Property and explicit accessors bound for one string struct member
