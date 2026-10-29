@@ -160,7 +160,8 @@ Python drives each instance through the methods F Prime generates for it:
   value is checked first against the size F Prime serializes it at: its declared size, else
   `FW_FIXED_LENGTH_STRING_SIZE`. On a full queue the instance's queue-full behavior applies: `assert` (the default)
   asserts, `drop` drops the signal, and `block` waits for room with the GIL released, so the dispatching thread can run
-  the handlers that make it.
+  the handlers that make it. Never send to a `block` instance from the thread that dispatches its queue (any action or
+  guard, or on a queued component the code that calls `doDispatch`): on a full queue that send waits forever.
 - `first_getState()` returns the current state as a `fprime_py.Ref.Blinker_State`, an F Prime enumeration whose `e`
   is a `Blinker_State.T`, e.g. `Blinker_State.T.IDLE`.
 
