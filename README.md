@@ -91,17 +91,30 @@ message, and the message is dropped once the hook returns.
 | Member | Hook | Arguments |
 | --- | --- | --- |
 | `async input port textIn: Text hook` | `textIn_overflowHook` | `portNum` and the port's arguments |
-| `internal port poke(msg: string size 5) hook` | `poke_overflowHook` | the internal port's arguments |
+| `internal port poke(note: string size 5) hook` | `poke_overflowHook` | the internal port's arguments |
 | `async command DO(n: U32) hook` | `DO_cmdOverflowHook` | `opCode` and `cmdSeq` only |
 
-The hook runs on the thread of the caller that found the queue full, not on the component's thread, so keep it short
-and do not block in it. F Prime does not answer a command it dropped: the template's command hook sends `BUSY` so the
-ground is not left waiting.
+Every hook must be implemented: a component whose Python class lacks one raises `AttributeError` from its generated
+`init`, at startup rather than at the first overflow. The template has a stub for each.
+
+- **Thread.** The hook runs on the thread of the caller that found the queue full, not on the component's thread.
+  Before any Python runs, that thread must take the GIL, which the component's own busy thread often holds, so even an
+  empty hook can delay the caller. Keep the hook short, never block in it, size the queue so that overflow stays the
+  exception, and prefer `drop` where the caller's timing matters.
+- **Concurrency.** The hook can run while one of the component's handlers is part-way through on the component's
+  thread, so it must not rely on state that a handler updates in several steps.
+- **Ownership.** F Prime does not count or report a hooked drop. The hook owns the dropped message: if a port carries
+  an `Fw::Buffer`, the hook must return or deallocate it.
+- **Commands.** F Prime does not answer a command it dropped, so a command hook must send a response. The template's
+  stub sends `BUSY`:
 
 ```python
 def DO_cmdOverflowHook(self, opCode, cmdSeq):
     self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.BUSY))
 ```
+
+An exception raised in a hook is not caught by the generated C++, as for any handler (see [Strings](#strings)), but
+here it reaches the caller's thread.
 
 ## Setting a Deployment Up With Python Bindings
 
