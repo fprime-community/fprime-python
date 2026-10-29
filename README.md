@@ -124,21 +124,23 @@ A component may instantiate internal state machines: ones whose actions, guards,
 FPP. Take this one, instantiated twice:
 
 ```
-state machine Blinker {
-    action store: U32
-    guard allow: U32
-    signal advance: U32
-    signal back
-    initial enter IDLE
-    state IDLE { on advance if allow do { store } enter BUSY }
-    state BUSY { on back enter IDLE }
-}
+module Ref {
+    state machine Blinker {
+        action store: U32
+        guard allow: U32
+        signal advance: U32
+        signal back
+        initial enter IDLE
+        state IDLE { on advance if allow do { store } enter BUSY }
+        state BUSY { on back enter IDLE }
+    }
 
-@ fprime-python
-queued component PySm {
-    ...
-    state machine instance first: Blinker
-    state machine instance second: Blinker
+    @ fprime-python
+    queued component PySm {
+        ...
+        state machine instance first: Blinker
+        state machine instance second: Blinker
+    }
 }
 ```
 
@@ -146,30 +148,39 @@ Each action and guard is a Python handler, named as F Prime names it after the m
 `Ref_Blinker_action_store(self, smId, signal, value)` and `Ref_Blinker_guard_allow(self, smId, signal, value)` for a
 machine `Ref.Blinker`. Every handler takes `smId` and `signal`; one whose action or guard declares a type also takes
 the signal's `value`. The handlers belong to the machine, not to an instance, so `first` and `second` call the same
-ones, and `smId` says which: it is an `enum.Enum` named `SmId`, bound inside the component's class, with one value per
-instance named after it (`smId.name == "first"`). A guard is `const` in C++ and must return a `bool`; anything else, `None`
-included, raises `TypeError`. The template's guard stubs return `False`, which leaves the guarded transition untaken.
-Every action and guard must be implemented: a missing one raises `AttributeError` from the generated `init`.
+ones, and `smId` says which: it is an `enum.Enum` bound inside the component's class, `fprime_py.Ref.PySm.SmId`, with
+one value per instance named after it (`smId.name == "first"`). A guard is `const` in C++ and must return a `bool`;
+anything else, `None` included, raises `TypeError`. The template's guard stubs return `False`, which leaves the guarded
+transition untaken. Every action and guard must be implemented: a missing one raises `AttributeError` from the
+generated `init`.
 
 Python drives each instance through the methods F Prime generates for it:
 
-- `first_sendSignal_advance(value)` and `first_sendSignal_back()` queue a signal for the component's thread. A string
-  value is checked against its declared size first.
+- `first_sendSignal_advance(value)` and `first_sendSignal_back()` queue a signal on the component's queue. A string
+  value is checked first against the size F Prime serializes it at: its declared size, else
+  `FW_FIXED_LENGTH_STRING_SIZE`. On a full queue the instance's queue-full behavior applies: `assert` (the default)
+  asserts, `drop` drops the signal, and `block` waits for room with the GIL released, so the dispatching thread can run
+  the handlers that make it.
 - `first_getState()` returns the current state as a `fprime_py.Ref.Blinker_State`, an F Prime enumeration whose `e`
   is a `Blinker_State.T`, e.g. `Blinker_State.T.IDLE`.
 
 The machine's states and signals are bound once, into the Python module of the FPP module defining the machine, as
-`Blinker_State` and `Blinker_Signal` (`enum.Enum`s for the values `signal` takes). A machine defined inside a component
+`Blinker_State`, an F Prime enumeration class whose values are in `Blinker_State.T`, and `Blinker_Signal`, an
+`enum.Enum` of the values `signal` takes, in the order of their numbers. A machine defined inside a component
 is named as F Prime names it, with the component folded in: `PySm_Local_State` and `PySm_Local_Signal` in the
 component's module. Both enumerations include F Prime's internal entries, because Python can see them:
 `Blinker_State.T.__FPRIME_UNINITIALIZED` is the state before the machine starts, and an action on the initial
 transition receives `Blinker_Signal.__FPRIME_INITIAL_TRANSITION`. Inside a class body Python mangles such names, so
 spell them `Blinker_Signal["__FPRIME_INITIAL_TRANSITION"]` there.
 
-- **Thread.** Actions and guards run on the component's thread as it dispatches the queued signal, as any handler does,
-  holding the GIL. The actions of the initial transition run during the component's `init`, on the thread setting up
-  the topology. `sendSignal` only queues the signal: call it from any handler, and the transition happens when the
-  component next dispatches.
+- **Thread.** Actions and guards run on the thread dispatching the component's queue, holding the GIL: the
+  component's own thread when it is active, and whatever calls `doDispatch` or `dispatchAvailableMessages` when it is
+  queued. `sendSignal` only queues the signal, and the transition happens when the queue is next dispatched.
+- **Initial transition.** The actions and guards of the initial transition run during the component's `init`, on the
+  thread setting up the topology, before the component's queue is created and before its ports are connected. They
+  must not send signals or invoke ports; they may only set up Python state.
+- **Exceptions.** An exception raised in an action or guard is not caught by the generated C++, as for any handler
+  (see [Strings](#strings)). One raised on the initial transition propagates out of the component's `init`.
 - **Instances defined elsewhere.** A machine defined inside another component is bound only with that component, so
   it is rejected; define it in a module instead.
 
