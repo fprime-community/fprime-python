@@ -360,4 +360,71 @@ def test_state_machine_instance_with_hook_is_rejected(tmp_path: Path) -> None:
         generate("SmHook.fpp", tmp_path)
     message = str(error.value)
     assert "Component Fixture.PySmHook has state machine instance toggle with 'hook' queue-full behavior" in message
-    assert "toggle_stateMachineOverflowHook takes the queued signal as a raw serial buffer" in message
+    assert (
+        "toggle_stateMachineOverflowHook takes the signal as a raw FwEnumStoreType and its value as a raw serial buffer"
+    ) in message
+
+
+def test_state_machine_values_follow_f_prime_parameter_spelling(machines: Dict[str, str]) -> None:
+    header = machines["PyWide.hpp"]
+    # F Prime passes a value by value only when its declared type is primitive: an alias of U32 goes by reference
+    assert (
+        "void Fixture_Wide_action_onCount(\n"
+        "          SmId smId, //!< The state machine id\n"
+        "          Fixture_Wide::Signal signal, //!< The signal\n"
+        "          const Fixture::Count& value\n"
+        "      ) override;"
+    ) in header
+    assert "          const Fixture::Mode& value\n      ) override;" in header
+    assert "          const Fixture::Pair& value\n      ) override;" in header
+    assert "          const Fw::StringBase& value\n      ) override;" in header
+    assert "          const Fixture::Count& value\n      ) const override;" in header
+    assert "          const Fixture::Mode& value\n      ) const override;" in header
+    assert "Fixture::Count value" not in header
+
+
+def test_state_machine_with_nested_states_and_choice_is_bound(machines: Dict[str, str]) -> None:
+    binding = machines["WideStateMachineBindingAc.cpp"]
+    for state in ("__FPRIME_UNINITIALIZED", "LAST", "OUTER_INNER"):
+        assert f'.value("{state}", Fixture::Wide_State::{state})' in binding
+    # Signals are bound in the order of their values, which F Prime assigns by name
+    signal = "Fixture::WideStateMachineBase::Signal"
+    names = ["__FPRIME_INITIAL_TRANSITION", "count", "hop", "label", "mode", "pair"]
+    assert "".join(f'      .value("{name}", {signal}::{name})\n' for name in names) in binding
+    assert "void Fixture_Wide_guard_checkCount(" not in machines["PyWide.hpp"]
+    assert "bool Fixture_Wide_guard_checkCount(" in machines["PyWide.hpp"]
+
+
+def test_blocking_state_machine_signals_release_the_gil(machines: Dict[str, str]) -> None:
+    binding = machines["PyWideBindingAc.cpp"]
+    release = "pybind11::call_guard<pybind11::gil_scoped_release>()"
+    assert f'.def("wide_sendSignal_hop", &Fixture::PyWide::wide_sendSignal_hop, {release})' in binding
+    assert f'.def("wide_sendSignal_count", &Fixture::PyWide::wide_sendSignal_count, {release})' in binding
+    # A string is checked while the GIL is still held, then the GIL is released for the send
+    assert (
+        '.def("wide_sendSignal_label", [](Fixture::PyWide& self, const Fw::StringBase& value) {\n'
+        "          FprimePython::check_declared_size(value, FW_FIXED_LENGTH_STRING_SIZE);\n"
+        "          pybind11::gil_scoped_release released{};\n"
+        "          return self.wide_sendSignal_label(value);\n"
+    ) in binding
+    # Instances that do not block keep the GIL
+    assert "gil_scoped_release" not in machines["PySmBindingAc.cpp"]
+
+
+def test_unbound_external_state_machines_get_no_bindings(machines: Dict[str, str]) -> None:
+    assert not [name for name in machines if name.startswith(("Outside", "PyWide_Hidden", "Hidden"))]
+
+
+def test_state_machine_defined_in_another_component_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(UnsupportedModelError) as error:
+        generate("SmForeign.fpp", tmp_path)
+    message = str(error.value)
+    assert (
+        "Component Fixture.PyForeign has state machine instance borrowed of state machine Fixture.Owner.Inner"
+    ) in message
+    assert "which is defined inside another component" in message
+
+
+def test_data_products_are_rejected(tmp_path: Path) -> None:
+    with pytest.raises(UnsupportedModelError, match="Component Fixture.PyProducts has data products"):
+        generate("SmProducts.fpp", tmp_path)

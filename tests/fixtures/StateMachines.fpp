@@ -52,4 +52,53 @@ module Fixture {
     state machine instance only: Blinker
   }
 
+  @ An alias of a primitive type, which a state machine passes by const reference
+  type Count = U32
+
+  @ An enumeration carried by a signal
+  enum Mode { ON, OFF }
+
+  @ A structure carried by a signal
+  struct Pair { left: U32, right: U32 }
+
+  @ A state machine whose signals carry every kind of value, with a nested state and a choice
+  state machine Wide {
+    action onCount: Count
+    action onMode: Mode
+    action onPair: Pair
+    action onLabel: string
+    guard checkCount: Count
+    guard checkMode: Mode
+    signal count: Count
+    signal mode: Mode
+    signal pair: Pair
+    signal label: string
+    signal hop
+    initial enter OUTER
+    state OUTER {
+      initial enter INNER
+      state INNER {
+        on count do { onCount } enter DECIDE
+        on label do { onLabel }
+      }
+      on pair do { onPair } enter OUTER
+    }
+    choice DECIDE { if checkCount enter OUTER else enter LAST }
+    state LAST {
+      on mode if checkMode do { onMode } enter OUTER
+      on hop enter LAST
+    }
+  }
+
+  @ A component instantiating the wide state machine with 'block' queue-full behavior
+  @ fprime-python
+  queued component PyWide {
+    sync input port tick: Tick
+
+    @ An external state machine defined but never instantiated, so nothing binds it
+    state machine Hidden
+
+    state machine instance wide: Wide priority 1 block
+  }
+
 }
