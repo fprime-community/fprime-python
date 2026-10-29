@@ -324,7 +324,7 @@ class OverflowHookView(HandlerView):
         self.owner = owner
         self.suffix = suffix
         self.HANDLER_PREFIX = owner.HANDLER_PREFIX
-        self.HANDLER_KIND = f"queue overflow of {owner.HANDLER_KIND}"
+        self.HANDLER_KIND = f"{owner.HANDLER_KIND} overflow hook"
 
     @property
     def name(self) -> str:
