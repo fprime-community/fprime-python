@@ -11,14 +11,18 @@ them, and the checks that reject a model this autocoder cannot bind.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Sequence, Tuple
+from functools import cached_property
+from typing import List, Optional, Sequence, Tuple, Union
 
 import fpp
 
 from .constants import FPRIME_PYTHON_ANNOTATION
-from .cpp_types import StringClass, formal_parameter_type, type_name, value_parameter_type, value_type
+from .cpp_types import StringClass, formal_parameter_type, type_name, value_type
 from .names import cpp_name, flat_name, namespaces_of, scope_of
 
+
+#: The signal F Prime passes to an action on a state machine's initial transition
+INITIAL_TRANSITION_SIGNAL = "__FPRIME_INITIAL_TRANSITION"
 
 #: The C++ token F Prime builds a `log_` method name from, per FPP event severity
 EVENT_SEVERITY_TOKENS = {
@@ -103,6 +107,15 @@ class ArgumentView(ABC):
         """ The C++ expression for the size of the argument's string, None unless it is a string """
         return string_size_expression(self.resolved_type)
 
+    @property
+    def checked_size(self) -> Optional[str]:
+        """ The size a bound method checks the argument's string against, None when it is not checked
+
+        Only a declared size is checked by default: a string of default size is bounded by its capacity alone.
+        """
+        size = self.declared_size
+        return None if size is None else str(size)
+
 
 class FormalParameterView(ArgumentView):
     """ One formal parameter of a port, command or event """
@@ -148,8 +161,22 @@ class StateMachineValueView(ArgumentView):
 
     @property
     def cpp_type(self) -> str:
-        """ The value's C++ type, reference qualifiers included """
-        return value_parameter_type(self.resolved_type, StringClass.PORT)
+        """ The value's C++ type, reference qualifiers included
+
+        Unlike a port argument, a value of an alias type is passed by `const` reference even when the alias names a
+        primitive: F Prime passes a value by value only when its declared type is itself primitive.
+        """
+        type_ = self.resolved_type
+        name = type_name(type_, StringClass.PORT)
+        return name if type_.is_primitive else f"const {name}&"
+
+    @property
+    def checked_size(self) -> Optional[str]:
+        """ The size F Prime serializes the value's string at: its declared size, else `FW_FIXED_LENGTH_STRING_SIZE`
+
+        F Prime truncates a longer string where it queues the signal, so the binding rejects it first.
+        """
+        return self.string_size
 
     @property
     def resolved_type(self) -> fpp.Type.Variant:
@@ -186,6 +213,9 @@ class HandlerView(ABC):
 
     #: Whether F Prime declares the handler `const`, as it does a state machine guard
     IS_CONST: bool = False
+
+    #: Whether the handler answers with a `bool` that Python must return as such, as a state machine guard does
+    RETURNS_STRICT_BOOL: bool = False
 
     @property
     @abstractmethod
@@ -500,7 +530,7 @@ class StateMachineView:
         return self._in_scope(f"{self.base_name}_Interface")
 
     @property
-    def component_class(self) -> str:
+    def nested_class_name(self) -> str:
         """ The name of the class F Prime nests in a component's base class for this state machine
 
         It is the machine's FPP-qualified name, flattened, and prefixes the name of every action and guard
@@ -524,16 +554,17 @@ class StateMachineView:
         for member in self.state_machine.node.members or []:
             if isinstance(member, fpp.ast.DefEnum):
                 return [constant.name for constant in member.constants]
-        return []
+        raise AssertionError(f"fpp synthesized no State enumeration in state machine {self.fpp_name}")
 
     @property
     def signal_constants(self) -> List[str]:
         """ The constants of the signal enumeration F Prime generates
 
-        F Prime puts a signal of its own first, for the initial transition. An action on that transition
-        receives it, so it is bound along with the modeled signals.
+        F Prime puts a signal of its own first, for the initial transition, and the modeled signals after it in
+        name order, which is the order of their values. An action on the initial transition receives F Prime's
+        signal, so it is bound along with the modeled signals.
         """
-        return [INITIAL_TRANSITION_SIGNAL] + [signal.name for signal in self._signals]
+        return [INITIAL_TRANSITION_SIGNAL] + sorted(signal.name for signal in self._signals)
 
     @property
     def _signals(self) -> List[fpp.ast.DefSignal]:
@@ -565,33 +596,30 @@ class StateMachineView:
         return handlers
 
 
-#: The signal F Prime passes to an action on a state machine's initial transition
-INITIAL_TRANSITION_SIGNAL = "__FPRIME_INITIAL_TRANSITION"
-
-
-class StateMachineActionView(HandlerView):
-    """ The handler F Prime declares for one action of an internal state machine
+class StateMachineHandlerView(HandlerView):
+    """ The handler F Prime declares for one action or guard of an internal state machine
 
     The handler belongs to the state machine rather than to an instance of it, so every instance of the
     machine in a component calls the same handler, and the state machine id says which one did. The signal
     is the one being handled, the machine's own initial-transition signal on the initial transition.
     """
 
-    HANDLER_KIND = "state machine action"
+    #: The word F Prime puts between the machine's name and the member's in the handler name
+    MEMBER_KIND: str = ""
 
-    def __init__(self, machine: StateMachineView, action: fpp.ast.DefAction) -> None:
-        """ Wrap an action of a state machine """
+    def __init__(self, machine: StateMachineView, member: Union[fpp.ast.DefAction, fpp.ast.DefGuard]) -> None:
+        """ Wrap an action or guard of a state machine """
         self.machine = machine
-        self.action = action
+        self.member = member
         self.HANDLER_PREFIX = (
             ("SmId", "smId", "The state machine id"),
-            (f"{machine.component_class}::Signal", "signal", "The signal"),
+            (f"{machine.nested_class_name}::Signal", "signal", "The signal"),
         )
 
     @property
     def name(self) -> str:
-        """ The action's name as written in the model """
-        return self.action.name
+        """ The member's name as written in the model """
+        return self.member.name
 
     @property
     def description(self) -> str:
@@ -600,16 +628,23 @@ class StateMachineActionView(HandlerView):
 
     @property
     def handler_name(self) -> str:
-        """ The name of the handler F Prime declares for this action """
-        return f"{self.machine.component_class}_action_{self.name}"
+        """ The name of the handler F Prime declares for this member """
+        return f"{self.machine.nested_class_name}_{self.MEMBER_KIND}_{self.name}"
 
     @property
     def parameters(self) -> Sequence[ArgumentView]:
-        """ The value the action takes, if it declares one """
-        return state_machine_values(self.action.type_name)
+        """ The value the member takes, if it declares one """
+        return state_machine_values(self.member.type_name)
 
 
-class StateMachineGuardView(HandlerView):
+class StateMachineActionView(StateMachineHandlerView):
+    """ The handler F Prime declares for one action of an internal state machine """
+
+    HANDLER_KIND = "state machine action"
+    MEMBER_KIND = "action"
+
+
+class StateMachineGuardView(StateMachineHandlerView):
     """ The handler F Prime declares for one guard of an internal state machine
 
     A guard is an action that decides whether a transition is taken: F Prime declares it `const`, returning
@@ -617,36 +652,9 @@ class StateMachineGuardView(HandlerView):
     """
 
     HANDLER_KIND = "state machine guard"
+    MEMBER_KIND = "guard"
     IS_CONST = True
-
-    def __init__(self, machine: StateMachineView, guard: fpp.ast.DefGuard) -> None:
-        """ Wrap a guard of a state machine """
-        self.machine = machine
-        self.guard = guard
-        self.HANDLER_PREFIX = (
-            ("SmId", "smId", "The state machine id"),
-            (f"{machine.component_class}::Signal", "signal", "The signal"),
-        )
-
-    @property
-    def name(self) -> str:
-        """ The guard's name as written in the model """
-        return self.guard.name
-
-    @property
-    def description(self) -> str:
-        """ What the handler is, as it reads in a generated comment """
-        return f"Handler for {self.HANDLER_KIND} {self.name} of {self.machine.fpp_name}"
-
-    @property
-    def handler_name(self) -> str:
-        """ The name of the handler F Prime declares for this guard """
-        return f"{self.machine.component_class}_guard_{self.name}"
-
-    @property
-    def parameters(self) -> Sequence[ArgumentView]:
-        """ The value the guard takes, if it declares one """
-        return state_machine_values(self.guard.type_name)
+    RETURNS_STRICT_BOOL = True
 
     @property
     def handler_return_type(self) -> str:
@@ -675,6 +683,11 @@ class StateMachineInstanceView:
     def get_state_name(self) -> str:
         """ The name of the method F Prime declares to read the instance's current state """
         return f"{self.name}_getState"
+
+    @property
+    def blocks_when_full(self) -> bool:
+        """ Whether sending the instance a signal waits for room on a full queue """
+        return self.instance.queue_full == fpp.ast.QueueFull.Block
 
     @property
     def send_signals(self) -> List[Tuple[str, List[ArgumentView]]]:
@@ -853,7 +866,7 @@ class ComponentView:
         ]
         return hooks
 
-    @property
+    @cached_property
     def state_machine_instances(self) -> List[StateMachineInstanceView]:
         """ The component's state machine instances, in name order """
         return [
@@ -921,9 +934,9 @@ class ComponentView:
             if instance.instance.queue_full == fpp.ast.QueueFull.Hook:
                 raise UnsupportedModelError(
                     f"{described} with 'hook' queue-full behavior, which fprime-python cannot bind: its overflow"
-                    f" hook {instance.name}_stateMachineOverflowHook takes the queued signal as a raw serial"
-                    f" buffer (Fw::SerialBufferBase), which has no Python equivalent. Use 'assert', 'block' or"
-                    f" 'drop' instead. {remedy}"
+                    f" hook {instance.name}_stateMachineOverflowHook takes the signal as a raw FwEnumStoreType and"
+                    f" its value as a raw serial buffer (Fw::SerialBufferBase), which have no Python equivalent."
+                    f" Use 'assert', 'block' or 'drop' instead. {remedy}"
                 )
             component = machine.enclosing_component
             if component is not None and component != self.component.symbol:

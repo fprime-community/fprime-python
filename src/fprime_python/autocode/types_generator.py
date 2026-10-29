@@ -243,6 +243,16 @@ class StateMachineBindingGenerator(BindingGenerator):
         return self.machine.base_class
 
     @property
+    def doc_name(self) -> str:
+        """ The bindings are of the machine's states and signals rather than of its base class """
+        return f"the states and signals of {self.machine.fpp_name}"
+
+    @property
+    def doc_subject(self) -> str:
+        """ The bindings are of the machine's states and signals rather than of its base class """
+        return f"the states and signals of the FPP state machine {self.machine.fpp_name}"
+
+    @property
     def scope(self) -> str:
         """ The module the state machine's C++ names live in, even when it is defined inside a component """
         return self.machine.scope

@@ -23,7 +23,7 @@ from .types_generator import (
     StateMachineBindingGenerator,
     StructBindingGenerator,
 )
-from .view import ComponentView, StateMachineView, TopologyView, is_annotated
+from .view import ComponentView, StateMachineView, TopologyView, UnsupportedModelError, is_annotated
 
 
 class AnnotatedDefinitionVisitor(fpp.AstVisitor):
@@ -74,7 +74,10 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
             files: A mapping of file name to file contents
         """
         for name, contents in files.items():
-            self.output[self.output_path / name] = contents
+            path = self.output_path / name
+            if path in self.output:
+                raise UnsupportedModelError(f"Two definitions would both generate {path}; rename one of them")
+            self.output[path] = contents
 
     def visit_DefArray(self, node: fpp.ast.DefArray) -> None:
         """ Run array generation when an array node is visited """

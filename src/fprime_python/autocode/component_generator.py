@@ -25,7 +25,6 @@ from .view import (
     HandlerView,
     OverflowHookView,
     ParameterView,
-    StateMachineGuardView,
 )
 
 
@@ -58,6 +57,7 @@ def checked_def(
     prefix: Sequence[Tuple[str, str, str]],
     params: Sequence[ArgumentView],
     cap: Optional[str] = None,
+    release_gil: bool = False,
 ) -> Optional[str]:
     """ Get a binding that checks each sized string argument against the size it is serialized at before the call
 
@@ -72,13 +72,14 @@ def checked_def(
         prefix: The method's leading parameters that are not modeled, as (C++ type, name, doc) triples
         params: The method's modeled parameters, in call order
         cap: The configuration constant that also bounds the method's strings, None when only the declared size does
+        release_gil: Whether the call releases the GIL once the strings are checked, as a call that may block must
     Returns:
         The pybind11 `.def(...)` call, or None when no argument needs a check
     """
     sizes = {
         param.name: size
         for param in params
-        if (size := param.string_size if cap is not None else param.declared_size) is not None
+        if (size := param.string_size if cap is not None else param.checked_size) is not None
     }
     sized = [param for param in params if param.name in sizes]
     if not sized:
@@ -93,6 +94,7 @@ def checked_def(
     return (
         f'.def("{name}", []({fqn}& self, {", ".join(declarations)}) {{\n'
         f"{checks}"
+        f"{'    pybind11::gil_scoped_release released{};' + chr(10) if release_gil else ''}"
         f'    return self.{name}({", ".join(arguments)});\n'
         "})"
     )
@@ -166,12 +168,22 @@ class ComponentBindingGenerator(BindingGenerator):
             signatures[internal.invoker_name] = (internal.HANDLER_PREFIX, internal.parameters, None)
         for event in component.events:
             signatures[event.dispatch_name] = ((), event.parameters, "FW_LOG_STRING_MAX_SIZE")
+        # A signal sent to a full queue that blocks waits holding no GIL, so the dispatching thread can run
+        # the actions and guards that make room
+        blocking = set()
         for instance in component.state_machine_instances:
             for name, values in instance.send_signals:
                 signatures[name] = ((), values, None)
+                if instance.blocks_when_full:
+                    blocking.add(name)
         links = []
         for method in base_class_methods(component):
-            checked = checked_def(method, fqn, *signatures[method]) if method in signatures else None
+            release_gil = method in blocking
+            checked = (
+                checked_def(method, fqn, *signatures[method], release_gil=release_gil) if method in signatures else None
+            )
+            if checked is None and release_gil:
+                checked = f'.def("{method}", &{fqn}::{method}, pybind11::call_guard<pybind11::gil_scoped_release>())'
             links.append(checked if checked is not None else standard_def(method, fqn))
         # A parameter is read through the generated helper rather than through F Prime's own getter,
         # because the getter reports validity through an out parameter that has no Python equivalent
@@ -446,7 +458,7 @@ class ComponentImplementationGenerator(object):
             body.line(f"{call};")
             return
         body.line(f"pybind11::object return_value = {call};")
-        if isinstance(handler, StateMachineGuardView):
+        if handler.RETURNS_STRICT_BOOL:
             # pybind11 would convert any object to a bool, None included, so a guard that forgot to return
             # would silently block its transition
             with body.if_("!pybind11::isinstance<pybind11::bool_>(return_value)"):
@@ -649,7 +661,7 @@ class ComponentImplementationGenerator(object):
                     )
                 )
                 continue
-            if isinstance(handler, StateMachineGuardView):
+            if handler.RETURNS_STRICT_BOOL:
                 stubs.append(
                     PYTHON_GUARD_HANDLER_TEMPLATE.format(
                         handler=handler.handler_name, name=handler.name, kind=handler.HANDLER_KIND, args=args
