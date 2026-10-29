@@ -146,8 +146,8 @@ Each action and guard is a Python handler, named as F Prime names it after the m
 `Ref_Blinker_action_store(self, smId, signal, value)` and `Ref_Blinker_guard_allow(self, smId, signal, value)` for a
 machine `Ref.Blinker`. Every handler takes `smId` and `signal`; one whose action or guard declares a type also takes
 the signal's `value`. The handlers belong to the machine, not to an instance, so `first` and `second` call the same
-ones, and `smId` says which: it is a `PySm.SmId`, with one value per instance (`fprime_py.Ref.PySm.SmId.first`, or
-`self.SmId.first` from the component). A guard is `const` in C++ and must return a `bool`; anything else, `None`
+ones, and `smId` says which: it is an `enum.Enum` named `SmId`, bound inside the component's class, with one value per
+instance named after it (`smId.name == "first"`). A guard is `const` in C++ and must return a `bool`; anything else, `None`
 included, raises `TypeError`. The template's guard stubs return `False`, which leaves the guarded transition untaken.
 Every action and guard must be implemented: a missing one raises `AttributeError` from the generated `init`.
 
