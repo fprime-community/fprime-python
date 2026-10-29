@@ -28,7 +28,7 @@ from .names import cpp_name, flat_name, scope_of
 #: Doc comment placed on every generated initialization function
 INIT_FUNCTION_COMMENT = """\\brief bind {fqn} into Python
 
-This function initializes the Python bindings for the FPP type {fqn}. It should be called
+This function initializes the Python bindings for {subject}. It should be called
 from within the pybind11 module initialization macro at top level.
 
 One language to rule them all, one language to find them...
@@ -114,6 +114,16 @@ class BindingGenerator(ABC):
         return cpp_name(self.fpp_name)
 
     @property
+    def doc_name(self) -> str:
+        """ The name the generated initialization function's comment says it binds """
+        return self.cpp_fqn
+
+    @property
+    def doc_subject(self) -> str:
+        """ What the generated initialization function's comment says it binds, in a sentence """
+        return f"the FPP type {self.cpp_fqn}"
+
+    @property
     def init_function_name(self) -> str:
         """ The name of the generated initialization function
 
@@ -187,10 +197,15 @@ class BindingGenerator(ABC):
         function = doc.function(
             self.init_function_name,
             params=[("pybind11::module_&", "m")],
-            comment=lines(INIT_FUNCTION_COMMENT.format(fqn=self.cpp_fqn), margin=None),
+            comment=lines(INIT_FUNCTION_COMMENT.format(fqn=self.doc_name, subject=self.doc_subject), margin=None),
         )
         self.bind(function.body)
         return doc
+
+    @property
+    def scope(self) -> str:
+        """ The FPP-qualified name of the scope whose Python submodule the definition is bound into """
+        return scope_of(self.fpp_name)
 
     def invocation(self) -> Dict[str, str]:
         """ The call the module initialization has to make to bind this definition
@@ -199,7 +214,7 @@ class BindingGenerator(ABC):
             A mapping of the FPP scope the definition lives in to the statement invoking its
             initialization function against that scope's pybind11 submodule
         """
-        scope = scope_of(self.fpp_name)
+        scope = self.scope
         submodule_variable = f"{MODULE_VARIABLE_PREFIX}{flat_name(scope)}"
         return {scope: f"(void) {self.init_function_name}({submodule_variable});"}
 

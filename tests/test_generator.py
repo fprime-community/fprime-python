@@ -1,6 +1,7 @@
 """ Tests of the bindings generated for a small fixture model """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict
 
@@ -9,6 +10,7 @@ import pytest
 from fprime_python.autocode.__main__ import main
 from fprime_python.autocode.include import IncludeManager
 from fprime_python.autocode.model import load_model
+from fprime_python.autocode.view import UnsupportedModelError
 from fprime_python.autocode.visitor import AnnotatedDefinitionVisitor
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -173,3 +175,256 @@ def test_members_without_hook_get_no_overflow_hook(files: Dict[str, str], hooks:
     assert "PLAIN_cmdOverflowHook" not in hooks["PyHooks.template.py"]
     assert "overflowHook" not in files["PyQueued.cpp"]
     assert "overflowHook" not in files["PyQueued.template.py"]
+
+
+@pytest.fixture
+def machines(tmp_path: Path) -> Dict[str, str]:
+    return generate("StateMachines.fpp", tmp_path)
+
+
+def handler_body(source: str, call: str) -> str:
+    """ The text of the generated handler definition leading up to a call it makes """
+    return source[source.rindex(" ::", 0, source.index(call)):source.index(call)]
+
+
+def test_state_machine_actions_and_guards_are_declared(machines: Dict[str, str]) -> None:
+    header = machines["PySm.hpp"]
+    assert (
+        "void Fixture_Blinker_action_store(\n"
+        "          SmId smId, //!< The state machine id\n"
+        "          Fixture_Blinker::Signal signal, //!< The signal\n"
+        "          U32 value\n"
+        "      ) override;"
+    ) in header
+    assert "void Fixture_Blinker_action_reset(" in header
+    # A guard is const and answers with a bool, as F Prime declares it
+    assert (
+        "bool Fixture_Blinker_guard_allow(\n"
+        "          SmId smId, //!< The state machine id\n"
+        "          Fixture_Blinker::Signal signal, //!< The signal\n"
+        "          U32 value\n"
+        "      ) const override;"
+    ) in header
+    # A machine defined inside the component is named as F Prime names it, with the component folded in
+    assert "void Fixture_PySm_Local_action_note(" in header
+    # Two instances of one machine share its handlers
+    assert header.count("Fixture_Blinker_action_store(") == 1
+
+
+def test_state_machine_handlers_are_forwarded_into_python(machines: Dict[str, str]) -> None:
+    source = machines["PySm.cpp"]
+    calls = [
+        'm_self.attr("Fixture_Blinker_action_store")(smId, signal, value);',
+        'm_self.attr("Fixture_Blinker_action_reset")(smId, signal);',
+        'm_self.attr("Fixture_PySm_Local_action_note")(smId, signal);',
+        'pybind11::object return_value = m_self.attr("Fixture_Blinker_guard_allow")(smId, signal, value);',
+    ]
+    for call in calls:
+        assert "pybind11::gil_scoped_acquire acquired{};" in handler_body(source, call)
+    assert "bool PySm ::\n    Fixture_Blinker_guard_allow(" in source
+    guard = source[source.index('attr("Fixture_Blinker_guard_allow")'):]
+    guard = guard[:guard.index("\n  }")]
+    # Anything but a bool is refused rather than converted, None included
+    assert "if (!pybind11::isinstance<pybind11::bool_>(return_value)) {" in guard
+    assert 'throw pybind11::type_error("PySm.Fixture_Blinker_guard_allow must return a bool");' in guard
+    assert "return return_value.cast<bool>();" in guard
+
+
+def test_missing_state_machine_handlers_are_reported_at_init(machines: Dict[str, str]) -> None:
+    source = machines["PySm.cpp"]
+    init = source[source.index('.attr("_init_ac")(this);'):source.index("PySmComponentBase::init(")]
+    expected = [
+        ("action", "Fixture_Blinker_action_store"),
+        ("action", "Fixture_Blinker_action_reset"),
+        ("guard", "Fixture_Blinker_guard_allow"),
+        ("action", "Fixture_PySm_Local_action_note"),
+    ]
+    for kind, handler in expected:
+        check = init[init.index(f'if (!pybind11::hasattr(pybind11::type::of(this->m_self), "{handler}")) {{'):]
+        check = check[:check.index("}")]
+        assert "this->m_self = pybind11::none();" in check
+        assert f'throw pybind11::attribute_error("PySm does not implement state machine {kind} {handler}");' in check
+
+
+def test_state_machine_handlers_get_python_stubs(machines: Dict[str, str]) -> None:
+    template = machines["PySm.template.py"]
+    assert "def Fixture_Blinker_action_store(self, smId, signal, value):" in template
+    assert "def Fixture_Blinker_action_reset(self, smId, signal):" in template
+    assert "def Fixture_PySm_Local_action_note(self, smId, signal):" in template
+    start = template.index("def Fixture_Blinker_guard_allow(self, smId, signal, value):")
+    guard = template[start:template.index("\n    def ", start)]
+    assert "returning a bool. Returning False (this stub) blocks the transition" in guard
+    assert "return False" in guard
+
+
+def test_state_machine_instance_methods_are_bound(machines: Dict[str, str]) -> None:
+    header = machines["PySm.hpp"]
+    binding = machines["PySmBindingAc.cpp"]
+    for instance in ("first", "second"):
+        for method in ("getState", "sendSignal_advance", "sendSignal_back", "sendSignal_rename"):
+            assert f"using PySmComponentBase::{instance}_{method};" in header
+        assert f'.def("{instance}_getState", &Fixture::PySm::{instance}_getState)' in binding
+        assert f'.def("{instance}_sendSignal_advance", &Fixture::PySm::{instance}_sendSignal_advance)' in binding
+        # A sized string signal is checked against its declared size before F Prime serializes it
+        assert (
+            f'.def("{instance}_sendSignal_rename", [](Fixture::PySm& self, const Fw::StringBase& value) {{\n'
+            "          FprimePython::check_declared_size(value, 8);\n"
+            f"          return self.{instance}_sendSignal_rename(value);\n"
+            "      })"
+        ) in binding
+    assert '.def("loc_sendSignal_go", &Fixture::PySm::loc_sendSignal_go)' in binding
+
+
+def test_state_machine_ids_are_bound_in_the_component(files: Dict[str, str], machines: Dict[str, str]) -> None:
+    assert "using PySmComponentBase::SmId;" in machines["PySm.hpp"]
+    binding = machines["PySmBindingAc.cpp"]
+    assert 'pybind11::class_<Fixture::PySm> component(m, "PySm");' in binding
+    assert (
+        'pybind11::native_enum<Fixture::PySm::SmId>(component, "SmId", "enum.Enum")\n'
+        '      .value("first", Fixture::PySm::SmId::first)\n'
+        '      .value("loc", Fixture::PySm::SmId::loc)\n'
+        '      .value("second", Fixture::PySm::SmId::second)\n'
+        "      .finalize();"
+    ) in binding
+    assert "#include <pybind11/native_enum.h>" in binding
+    # Components without state machines are bound as before
+    assert "SmId" not in files["PyQueuedBindingAc.cpp"]
+    assert 'pybind11::class_<Fixture::PyQueued>(m, "PyQueued")' in files["PyQueuedBindingAc.cpp"]
+
+
+def test_state_machine_states_and_signals_are_bound_once_per_machine(machines: Dict[str, str]) -> None:
+    binding = machines["BlinkerStateMachineBindingAc.cpp"]
+    assert '#include "BlinkerStateMachineAc.hpp"' in binding
+    assert "void init_Fixture_Blinker_StateMachine(pybind11::module_& m) {" in binding
+    assert 'pybind11::class_<Fixture::Blinker_State> enumeration(m, "Blinker_State");' in binding
+    assert (
+        'pybind11::native_enum<Fixture::Blinker_State::T>(enumeration, "T", "enum.Enum")\n'
+        '      .value("__FPRIME_UNINITIALIZED", Fixture::Blinker_State::__FPRIME_UNINITIALIZED)\n'
+        '      .value("BUSY", Fixture::Blinker_State::BUSY)\n'
+        '      .value("IDLE", Fixture::Blinker_State::IDLE)\n'
+        "      .export_values()\n"
+        "      .finalize();"
+    ) in binding
+    # The initial-transition signal is bound too: an action on the initial transition receives it
+    signal = "Fixture::BlinkerStateMachineBase::Signal"
+    assert (
+        f'pybind11::native_enum<{signal}>(m, "Blinker_Signal", "enum.Enum")\n'
+        f'      .value("__FPRIME_INITIAL_TRANSITION", {signal}::__FPRIME_INITIAL_TRANSITION)\n'
+        f'      .value("advance", {signal}::advance)\n'
+        f'      .value("back", {signal}::back)\n'
+        f'      .value("rename", {signal}::rename)\n'
+        "      .finalize();"
+    ) in binding
+    assert json.loads(machines["BlinkerStateMachineBinding.json"]) == {
+        "Fixture": "(void) init_Fixture_Blinker_StateMachine(fprime_Fixture);"
+    }
+    # Two instances and two components share Blinker, and it is still registered exactly once
+    registrations = [
+        name for name, contents in machines.items() if '"Blinker_State"' in contents or '"Blinker_Signal"' in contents
+    ]
+    assert registrations == ["BlinkerStateMachineBindingAc.cpp"]
+    # An external machine has nothing to bind
+    assert not [name for name in machines if name.startswith("Outside")]
+
+
+def test_nested_state_machine_is_bound_under_its_module(machines: Dict[str, str]) -> None:
+    binding = machines["PySm_LocalStateMachineBindingAc.cpp"]
+    assert '#include "PySm_LocalStateMachineAc.hpp"' in binding
+    assert 'pybind11::class_<Fixture::PySm_Local_State> enumeration(m, "PySm_Local_State");' in binding
+    assert 'pybind11::native_enum<Fixture::PySm_LocalStateMachineBase::Signal>(m, "PySm_Local_Signal"' in binding
+    assert json.loads(machines["PySm_LocalStateMachineBinding.json"]) == {
+        "Fixture": "(void) init_Fixture_PySm_Local_StateMachine(fprime_Fixture);"
+    }
+
+
+def test_state_machine_defined_elsewhere_is_not_bound_again(tmp_path: Path) -> None:
+    model = load_model(
+        [FIXTURES / "SmShared.fpp"], [FIXTURES / "Config.fpp", FIXTURES / "StateMachines.fpp"]
+    )
+    visitor = AnnotatedDefinitionVisitor(tmp_path, model.analysis, IncludeManager([FIXTURES]))
+    files = {path.name: contents for path, contents in visitor.generate(model).items()}
+    assert "void Fixture_Blinker_action_store(" in files["PyElsewhere.hpp"]
+    assert not [name for name in files if "StateMachineBinding" in name]
+
+
+def test_external_state_machine_instance_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(UnsupportedModelError) as error:
+        generate("SmExternal.fpp", tmp_path)
+    message = str(error.value)
+    assert "Component Fixture.PyExternal has state machine instance ext of external state machine" in message
+    assert "hand-written C++ interface Fixture::Outside_Interface, not in the model" in message
+
+
+def test_state_machine_instance_with_hook_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(UnsupportedModelError) as error:
+        generate("SmHook.fpp", tmp_path)
+    message = str(error.value)
+    assert "Component Fixture.PySmHook has state machine instance toggle with 'hook' queue-full behavior" in message
+    assert (
+        "toggle_stateMachineOverflowHook takes the signal as a raw FwEnumStoreType and its value as a raw serial buffer"
+    ) in message
+
+
+def test_state_machine_values_follow_f_prime_parameter_spelling(machines: Dict[str, str]) -> None:
+    header = machines["PyWide.hpp"]
+    # F Prime passes a value by value only when its declared type is primitive: an alias of U32 goes by reference
+    assert (
+        "void Fixture_Wide_action_onCount(\n"
+        "          SmId smId, //!< The state machine id\n"
+        "          Fixture_Wide::Signal signal, //!< The signal\n"
+        "          const Fixture::Count& value\n"
+        "      ) override;"
+    ) in header
+    assert "          const Fixture::Mode& value\n      ) override;" in header
+    assert "          const Fixture::Pair& value\n      ) override;" in header
+    assert "          const Fw::StringBase& value\n      ) override;" in header
+    assert "          const Fixture::Count& value\n      ) const override;" in header
+    assert "          const Fixture::Mode& value\n      ) const override;" in header
+    assert "Fixture::Count value" not in header
+
+
+def test_state_machine_with_nested_states_and_choice_is_bound(machines: Dict[str, str]) -> None:
+    binding = machines["WideStateMachineBindingAc.cpp"]
+    for state in ("__FPRIME_UNINITIALIZED", "LAST", "OUTER_INNER"):
+        assert f'.value("{state}", Fixture::Wide_State::{state})' in binding
+    # Signals are bound in the order of their values, which F Prime assigns by name
+    signal = "Fixture::WideStateMachineBase::Signal"
+    names = ["__FPRIME_INITIAL_TRANSITION", "count", "hop", "label", "mode", "pair"]
+    assert "".join(f'      .value("{name}", {signal}::{name})\n' for name in names) in binding
+    assert "void Fixture_Wide_guard_checkCount(" not in machines["PyWide.hpp"]
+    assert "bool Fixture_Wide_guard_checkCount(" in machines["PyWide.hpp"]
+
+
+def test_blocking_state_machine_signals_release_the_gil(machines: Dict[str, str]) -> None:
+    binding = machines["PyWideBindingAc.cpp"]
+    release = "pybind11::call_guard<pybind11::gil_scoped_release>()"
+    assert f'.def("wide_sendSignal_hop", &Fixture::PyWide::wide_sendSignal_hop, {release})' in binding
+    assert f'.def("wide_sendSignal_count", &Fixture::PyWide::wide_sendSignal_count, {release})' in binding
+    # A string is checked while the GIL is still held, then the GIL is released for the send
+    assert (
+        '.def("wide_sendSignal_label", [](Fixture::PyWide& self, const Fw::StringBase& value) {\n'
+        "          FprimePython::check_declared_size(value, FW_FIXED_LENGTH_STRING_SIZE);\n"
+        "          pybind11::gil_scoped_release released{};\n"
+        "          return self.wide_sendSignal_label(value);\n"
+    ) in binding
+    # Instances that do not block keep the GIL
+    assert "gil_scoped_release" not in machines["PySmBindingAc.cpp"]
+
+
+def test_unbound_external_state_machines_get_no_bindings(machines: Dict[str, str]) -> None:
+    assert not [name for name in machines if name.startswith(("Outside", "PyWide_Hidden", "Hidden"))]
+
+
+def test_state_machine_defined_in_another_component_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(UnsupportedModelError) as error:
+        generate("SmForeign.fpp", tmp_path)
+    message = str(error.value)
+    assert (
+        "Component Fixture.PyForeign has state machine instance borrowed of state machine Fixture.Owner.Inner"
+    ) in message
+    assert "which is defined inside another component" in message
+
+
+def test_data_products_are_rejected(tmp_path: Path) -> None:
+    with pytest.raises(UnsupportedModelError, match="Component Fixture.PyProducts has data products"):
+        generate("SmProducts.fpp", tmp_path)
