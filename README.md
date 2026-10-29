@@ -40,8 +40,10 @@ library, which handles the nuances of the Python API.
 
 ## Installation and Setup
 
-In order to use `fprime-python` download the source code, or add it as a Git submodule.  Once finished, make sure to
-pull int `pybind11` and our autocoding by running `pip install -r requirements.txt` in the `fprime-python` checkout.
+In order to use `fprime-python` download the source code, or add it as a Git submodule.  Once finished, install the
+autocoder and its dependencies by running `pip install .` in the `fprime-python` checkout. This requires Python 3.10
+or newer. The autocoder reads the FPP model directly, so `FPRIME_ENABLE_JSON_MODEL_GENERATION` and
+`fprime-python-model` are no longer needed.
 
 Next, add the path to the download in the `library_locations` list set in settings.ini for a deployment. 
 
@@ -66,6 +68,36 @@ active component ActivePythonExample {
 Once finished, the python bindings will be autocoded and included in the next build (assuming the deployment is setup 
 as shown below). This will also produce a `<component>.template.py` file in the component folder as a basic template for
 implementing components in python.
+
+Every port, command, event, telemetry channel, parameter and internal port of the component is bound. Four
+component features cannot be bound yet, because F Prime declares a handler for each that has no Python equivalent:
+
+| Feature | Why | What happens |
+| --- | --- | --- |
+| serial port | its handler takes a serialization buffer | rejected with an error naming the port |
+| state machine instance | its actions and guards take a state machine id and a signal | rejected with an error naming the component |
+| data product container | its handler takes a `Fw::DpContainer` | rejected with an error naming the component |
+| `hook` queue-full behavior | its overflow hook takes the message that could not be queued | rejected with an error naming the component |
+
+In each case the autocoder refuses rather than generating a class that would leave the handler unimplemented and
+fail to link. Drop the `@ fprime-python` annotation to implement such a component in C++ instead.
+
+## Setting a Deployment Up With Python Bindings
+
+The deployment topology that instantiates Python components must also carry the `@ fprime-python` annotation. Only an
+annotated topology gets the `setup` and `teardown` bindings and the `Instances` handles that the Python runner uses to
+start the deployment. A deployment topology that instantiates `@ fprime-python` components without the annotation is
+rejected with an error naming the topology.
+
+```
+@ fprime-python
+deployment topology MyDeployment {
+    ...
+}
+```
+
+An annotated topology must be a `deployment topology`: the binding calls the topology's setup and teardown, and
+F Prime only generates those for a deployment.
 
 > [!CAUTION]
 > The `<component>.template.py` is updated on every build unlike F Prime implementation templates.
@@ -95,8 +127,8 @@ fw_time_object = Time()
 Struct members are available as properties and as the autocoded `get_<member>()`/`set_<member>()` functions. Members
 declared as inlined arrays (e.g. `rgb: [768] U8`) are copied: reading one returns a new `list` of the elements and
 writing one accepts a sequence of elements (`list`, `tuple`, `bytes` for integer elements, ...) of exactly the declared
-length. Elements use the same Python representation as scalar members of that type (`str` for strings, truncated to the
-declared string size; `<Enum>.T` for enumerations). A wrong length raises `ValueError`; an element that cannot be
+length. Elements use the same Python representation as scalar members of that type (`str` for strings; `<Enum>.T` for
+enumerations). A wrong length raises `ValueError`; an element that cannot be
 converted raises `TypeError` and leaves the member unchanged.
 
 ```python
@@ -108,6 +140,38 @@ palette.rgb[0] = 255       # modifies the copy only: assign the whole sequence i
 Because the list is a copy, element assignment does not write through to the struct. This differs from members whose
 type is an FPP `array`, which are bound by reference and can be modified in place.
 
+### Strings
+
+A Python `str` copied into an F Prime string must fit that string's storage and contain no NUL characters, or it raises
+`ValueError` rather than being stored truncated. Storage is counted in bytes of UTF-8 encoding, so check
+`len(s.encode())`, not `len(s)`: a `string size 8` holds at most 8 bytes.
+
+- Struct members, array elements, inline array elements, the string arguments of output ports and internal ports,
+  and strings returned from a Python port handler are checked against their declared `string size`.
+- Event string arguments and telemetry channels are checked against the smaller of their size (declared, or
+  `FW_FIXED_LENGTH_STRING_SIZE` by default) and `FW_LOG_STRING_MAX_SIZE` or `FW_TLM_STRING_MAX_SIZE`, the sizes
+  F Prime serializes them at. With the default configuration that is 200 bytes for an event string and 40 bytes for a
+  telemetry string, even one with no declared size; F Prime itself would truncate the excess.
+- Every string is also checked against the capacity of the F Prime string class that carries it, which is the only
+  bound on a port string with no declared size: `FW_FIXED_LENGTH_STRING_SIZE` for port strings and
+  `FW_INTERNAL_INTERFACE_STRING_MAX_SIZE` for internal ports.
+
+A `ValueError` raised in a Python handler, such as a port handler returning a `str` that is too long, is not caught by
+the generated C++. When an F Prime thread made the call it ends the process; when Python code started the call it
+reaches that code, but any guarded input port it passed through is left locked, so the next call to that port blocks
+forever. Do not catch such an error and carry on; check string lengths in Python where the input is not trusted.
+
+## Development
+
+Install the autocoder and its check dependencies into a virtual environment, then run the type check and the
+generator tests:
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e '.[dev]'
+.venv/bin/python -m mypy
+.venv/bin/python -m pytest tests
+```
+
 ## TODO: custom bindings
 
-## TODO: Deployments, 
+## TODO: Deployments

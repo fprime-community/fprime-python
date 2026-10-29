@@ -6,338 +6,210 @@ Bindings have several components:
 2. A header file that declares the initialization function
 3. A snippet of code that can be used to call the initialization function
 
-This file provides the base generators for generating these components. Specific generators for given types can inherit
-from the constructors in this file.
+This file provides the base generator for those components. Generators for specific kinds of definition
+inherit from it and supply only the pybind11 statements that bind their own definition; the base class
+wraps those in the initialization function, declares it, and records how to call it.
 """
+from __future__ import annotations
+
 import json
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import List, Tuple, TypeAlias
+from typing import Dict, Iterable, List
 
-from fprime_python_model.semantics.types_values import Type
-from fprime_python_model.semantics.analysis import Analysis
-from fprime_python_model.semantics.symbol import Symbol
+import fpp
+from fprime_cpp_codegen import Body, CppDocBuilder, Line, Output, line, lines
+from fprime_cpp_codegen.lines import add_suffix, indent_lines
 
+from .constants import MODULE_VARIABLE_PREFIX, SUPPORT_HEADER, TOOL_NAME
 from .include import IncludeManager
-
-In: TypeAlias = Tuple[Analysis, ...]
-
-STANDARD_INDENT = "    "
+from .names import cpp_name, flat_name, scope_of
 
 
-# Namespace wrapper template
-NAMESPACE_TEMPLATE = """namespace {namespace} {{
-{namespace_block}
-}} // Namespace {namespace}
-"""
+#: Doc comment placed on every generated initialization function
+INIT_FUNCTION_COMMENT = """\\brief bind {fqn} into Python
+
+This function initializes the Python bindings for the FPP type {fqn}. It should be called
+from within the pybind11 module initialization macro at top level.
+
+One language to rule them all, one language to find them...
+
+\\param m The pybind11 module to bind the type into"""
+
+#: Comment placed above every generated initialization function's definition
+INIT_FUNCTION_DEFINITION_COMMENT = "\n// ...and in the darkness bind them ({fqn})"
 
 
-def namespace_recurse(namespaces: List[str], interior: List[str]) -> List[str]:
-    """ Recursively wrap lines in namespaces
-    
-    This is a helper function that recursively wraps a set of lines in namespace blocks without using :: notation.
-    This will wrap one instance of NAMESPACE_TEMPLATE per recursion until all namespaces are wrapped
-    around the interior lines.
+def expression_chain(head: str, links: Iterable[str]) -> List[Line]:
+    """ Render a chained C++ expression as lines, one link per line, terminated with a semicolon
+
+    A pybind11 binding is one long chained expression: the class is constructed and then each binding is
+    another `.def(...)` applied to the result. Links are emitted verbatim, so a link may span lines --
+    one taking a C++ lambda usually does -- and keeps its own relative indentation.
 
     Args:
-        namespaces: The list of namespaces to wrap around the interior lines
-        interior: The lines to wrap in namespaces
+        head: The expression the chain starts from
+        links: The chained calls, each of which may span lines
     Returns:
-        The lines wrapped in the namespace blocks
+        The rendered lines, with the statement's semicolon attached to the last of them
     """
-    interior_lines = namespace_recurse(namespaces[1:], interior) if len(namespaces) > 1 else interior
-    return NAMESPACE_TEMPLATE.format(
-        namespace=namespaces[0],
-        namespace_block="\n".join(interior_lines)
-    ).splitlines()
-
-class DataHelper(object):
-    """ Helper class for processing various data objects """
-
-    @staticmethod
-    def get_annotated_node(analysis_object):
-        """ Get the annotated node for a given analysis object
-        
-        In some cases, an object may have a .node property that points to the AST node, but in other cases, the AST node
-        may be stored in the .a_node property. This method abstracts away this difference and returns the annotated node
-        for a given analysis object.
-
-        Args:
-            analysis_object: The analysis object to get the annotated node for
-        Returns:
-            The annotated node for the given analysis object
-        """
-        return getattr(analysis_object, "node", getattr(analysis_object, "a_node", None))
-
-    @classmethod
-    def get_unqualified_name(cls, analysis_object) -> str:
-        """ Get the unqualified name for a given analysis object
-        
-        This method uses a symbol to get the unqualified name for the given analysis object. If the symbol cannot be
-        made because this is not a definition, then it attempts to get the name from the AST node directly using the
-        data.name field.
-
-        Args:
-            analysis_object: The analysis object to get the unqualified name for
-
-        Returns:
-            The unqualified name for the given analysis object
-        """
-        a_node = cls.get_annotated_node(analysis_object)
-        try:
-            symbol = Symbol.construct(a_node)
-            unqualified_name = symbol.get_unqualified_name()
-        except ValueError:
-            _, node, _ = a_node
-            unqualified_name = node.data.name
-        return str(unqualified_name)
-
-    @classmethod
-    def get_fully_qualified_name(cls, analysis_object, analysis: Analysis) -> str:
-        """ Get the fully qualified name for a given analysis object
-        
-        This method uses a symbol to get the fully qualified name for the given analysis object. The name returned is
-        in FPP format (e.g., "Namespace.Component").
-
-        Args:
-            analysis_object: The analysis object to get the fully qualified name for
-            analysis: The analysis to use for looking up qualified names
-        Returns:
-            The fully qualified name for the given analysis object
-        """
-        symbol = Symbol.construct(cls.get_annotated_node(analysis_object))
-        fully_qualified_class_name = str(analysis.get_qualified_name_from_map(symbol))
-        return fully_qualified_class_name
-
-    @classmethod
-    def get_fully_qualified_cpp_name(cls, analysis_object, analysis: Analysis) -> str:
-        """ Get the fully qualified C++ class name for a given type object
-        
-        This method uses the analysis to get the fully qualified name for the given type object and then converts it
-        to a C++-style name by replacing FPP's "." with C++'s "::".
-
-        Args:
-            analysis_object: The analysis object to get the fully qualified name for
-            analysis: The analysis to use for looking up qualified names
-        Returns:
-            The fully qualified C++ class name for the given type object
-        """
-        return cls.get_fully_qualified_name(analysis_object, analysis).replace(".", "::")
+    rendered = [line(head)]
+    for link in links:
+        rendered += indent_lines([line(text) for text in link.split("\n")], 4)
+    return add_suffix(rendered, ";")
 
 
-class CodeGenerator(ABC):
-    """ Abstract base class for generating code for FPP from the FPP
-    
-    This class supplies core functionality for generating code from FPP constructs. It serves as a base for the binding
-    generators and implementation generators.
+def standard_def(name: str, fqn: str) -> str:
+    """ Get a standard 'def' binding for a member function
+
+    This generates a standard pybind11 definition for a member function, given the function name and the
+    fully qualified name of the class it belongs to. The Python name is the C++ one.
+
+    Args:
+        name: The name of the function, in C++ and in Python
+        fqn: The fully qualified C++ name of the class the function belongs to
+    Returns:
+        The pybind11 `.def(...)` call
     """
-    def __init__(self, include_manager: IncludeManager):
-        """ Initialize the generator with an include manager"""
-        super().__init__()
+    return f'.def("{name}", &{fqn}::{name})'
+
+
+class BindingGenerator(ABC):
+    """ Base class for generating the pybind11 binding of one FPP definition
+
+    A binding is three files: a C++ source defining an initialization function that attaches the
+    definition to a pybind11 module, a header declaring that function so the module initialization can
+    call it, and a JSON snippet recording the call it needs to make. This class produces all three
+    around the pybind11 statements that `bind` writes.
+    """
+
+    #: Suffix of the generated C++ file pair, e.g. PyActiveBindingAc.hpp
+    FILE_BASE_SUFFIX = "BindingAc"
+
+    #: Suffix of the generated invocation snippet, e.g. PyActiveBinding.json
+    INVOCATION_SUFFIX = "Binding"
+
+    def __init__(self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant) -> None:
+        """ Initialize the generator for one definition
+
+        Args:
+            include_manager: Resolves the include paths of the headers the binding needs
+            symbol: The symbol of the definition being bound
+        """
         self.include_manager = include_manager
+        self.symbol = symbol
 
-    def get_annotated_node(self, analysis_object):
-        """ Get the annotated node for a given analysis object
-        
-        In some cases, an object may have a .node property that points to the AST node, but in other cases, the AST node
-        may be stored in the .a_node property. This method abstracts away this difference and returns the annotated node
-        for a given analysis object.
+    @property
+    def name(self) -> str:
+        """ The definition's unqualified name """
+        return self.symbol.unqualified_name
 
-        Caution: prefer the DataHelper.get_annotated_node method instead of this one.
-        
-        Args:
-            analysis_object: The analysis object to get the annotated node for
-        Returns:
-            The annotated node for the given analysis object
+    @property
+    def fpp_name(self) -> str:
+        """ The definition's FPP-qualified name """
+        return self.symbol.qualified_name
+
+    @property
+    def cpp_fqn(self) -> str:
+        """ The definition's C++-qualified name """
+        return cpp_name(self.fpp_name)
+
+    @property
+    def init_function_name(self) -> str:
+        """ The name of the generated initialization function
+
+        The function is declared at global scope so that the module initialization can call every one of
+        them without opening namespaces, so the definition's qualified name is flattened into it.
         """
-        return DataHelper.get_annotated_node(analysis_object)
+        return f"init_{flat_name(self.fpp_name)}"
 
-    def get_fully_qualified_cpp_name(self, type_object: Type, in_: In) -> str:
-        """ Get the fully qualified C++ class name for a given type object
-        
-        This method uses the analysis to get the fully qualified name for the given type object and then converts it
-        to a C++-style name by replacing "." with "::".
+    @property
+    def file_base(self) -> str:
+        """ The base name of the generated C++ file pair """
+        return f"{self.name}{self.FILE_BASE_SUFFIX}"
 
-        Args:
-            type_object: The type object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            The fully qualified C++ class name for the given type object
-        """
-        full_analysis, *_ = in_
-        return DataHelper.get_fully_qualified_cpp_name(type_object, full_analysis)
-
-    def get_unqualified_name(self, type_object: Type, _: In) -> str:
-        """ Get the unqualified name for a given type object
-        
-        This method uses a symbol to get the unqualified name for the given type object.
-
-        Caution: prefer the DataHelper.get_annotated_node method instead of this one.
-
-        Args:
-            type_object: The type object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            The unqualified name for the given type object
-        """
-        return DataHelper.get_unqualified_name(type_object)
-    
-    @staticmethod
-    def indent(lines: List[str], indent_level: int = 1) -> List[str]:
-        """ Indent a list of lines by a given indent level
-        
-        This function will take the standard indentation string, multiply it by the indent level and then prepend it
-        to each of the provide lines.
-
-        Args:
-            lines: The lines to indent
-            indent_level: The level of indentation to apply
-        Returns:
-            The list of lines with the appropriate indentation applied
-        """
-        indent_str = STANDARD_INDENT * indent_level
-        return [f"{indent_str}{line}" for line in lines]
-
-
-INIT_FUNCTION_PROTOTYPE_LINES_TEMPLATE = """
-// Autogenerated by fprime-python. Do not edit manually.
-#ifndef FPRIME_PYTHON_{fqn_with_underscores}_HPP
-#define FPRIME_PYTHON_{fqn_with_underscores}_HPP
-{include_block}
-
-//! \\brief bind {fqn} into Python
-//!
-//! This function initializes the Python bindings for the FPP type {fqn}. It should be called
-//! from within the pybind11 module initialization macro at top level.
-//!
-//! One language to rule them all, one language to find them...
-//!
-//! \\param m The pybind11 module to bind the type into
-void init_{fqn_with_underscores}(pybind11::module_& m);
-#endif // FPRIME_PYTHON_{fqn_with_underscores}_HPP
-"""
-
-INIT_FUNCTION_TEMPLATE = """
-{include_block}
-// Autogenerated by fprime-python. Do not edit manually.
-// ...and in the darkness bind them ({fqn})
-void init_{fqn_with_underscores}(pybind11::module_& m) {{
-{STANDARD_INDENT}{class_definition}
-}}
-"""
-
-INIT_FUNCTION_INVOCATION_TEMPLATE = "(void) init_{fqn_with_underscores}(fprime_{parent_fqn_with_underscores});"
-
-class FppPybindBindingGenerator(CodeGenerator):
-    """ Abstract base class for FPP type pybind11 C++ generators
-    
-    This abstract base class defines the interface and common wrapping code for generating pybind11 C++ bindings and it
-    additionally provides the functionality of wrapping type-specific binding code in a standard initialization
-    function.
-    """
-
-    def get_hpp_lines(self, type_object: Type, in_: In) -> List[str]:
-        """ Generate the lines for the C++ header file for bindings
-        
-        These lines consist of a type-specific binding initialization function declaration.
-
-        Args:
-            type_object: The type object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            A list of strings representing the lines of C++ header code for the type binding
-        """
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(type_object, in_)
-        return INIT_FUNCTION_PROTOTYPE_LINES_TEMPLATE.format(
-            include_block="\n".join(self.get_hpp_includes(type_object, in_)),
-            fqn=fully_qualified_class_name,
-            fqn_with_underscores=fully_qualified_class_name.replace("::", "_"),
-        ).splitlines()
-
-
-    def get_cpp_lines(self, type_object: Type, in_: In) -> List[str]:
-        """ Generate the lines for the C++ implementation file for a type node
-        
-        These lines consist of a type-specific binding initialization function wrapping type specific binding code.
-
-        Args:
-            type_object: The type object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            A list of strings representing the lines of C++ implementation code for the type binding
-        """
-        unqualified_class_name = self.get_unqualified_name(type_object, in_)
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(type_object, in_)
-        class_definition_lines = self.get_type_lines(type_object, in_)
-        binding_header_path = Path(self.include_manager.get_include_path(self.get_annotated_node(type_object))).parent / f"{unqualified_class_name}BindingAc.hpp"
-        includes = [f"#include \"{binding_header_path.as_posix()}\""] + self.get_cpp_includes(type_object, in_)
-        return INIT_FUNCTION_TEMPLATE.format(
-            STANDARD_INDENT=STANDARD_INDENT,
-            include_block="\n".join(includes),
-            fqn=fully_qualified_class_name,
-            fqn_with_underscores=fully_qualified_class_name.replace("::", "_"),
-            class_definition=f"\n{STANDARD_INDENT}".join(class_definition_lines)
-        ).splitlines()
-
-    def get_init_function_invocation(self, type_object: Type, in_: In) -> List[str]:
-        """ Generate pair of containing module and invocation line for this type
-        
-        Returns the invocation statement lines for the initialization function for this type. These are expressed as 
-        a JSON serialized dictionary mapping the fully qualified namespace to the invocation lines.
-
-        Args:
-            type_object: The type object from the analysis' type map to generate lines for
-            in_: input support tuple
-        Returns:
-            JSON serialized lines of a dictionary of namespace fqn to init function lines of C++ code
-        """
-        fully_qualified_class_name = self.get_fully_qualified_cpp_name(type_object, in_)
-        fqn_with_underscores = str(fully_qualified_class_name).replace("::", "_")
-        fqn_of_parent = ".".join(str(fully_qualified_class_name).split("::")[:-1])
-        return json.dumps({fqn_of_parent: INIT_FUNCTION_INVOCATION_TEMPLATE.format(
-            fqn_with_underscores=fqn_with_underscores,
-            parent_fqn_with_underscores=fqn_of_parent.replace(".", "_")
-        )}).splitlines()
-
-    def get_hpp_includes(self, _: Type, __: In) -> List[str]:
-        """ Get any includes required by the HPP file """
-        return ["#include \"FprimePython/FprimePython.hpp\""]
-    
-    def get_cpp_includes(self, type_object: Type, _: In) -> List[str]:
-        """ Get any includes required by the CPP file """
-        return ["#include \"{}\"".format(self.include_manager.get_include_path(self.get_annotated_node(type_object)))]
-
-    DEF_TEMPLATE = """.def("{name}", {optional_cast}&{fqn}::{name}{optional_cast_end})"""
-    def standard_def(self, name: str, fqn: str, disambiguation_cast: str = "") -> str:
-        """ Get a standard 'def' binding for a function
-        
-        This method generates a standard pybind11 definition for a function, given the function name, and the fully
-        qualified name of the class it belongs to. If provided, the disambiguation cast allows a user to disambiguate
-        between overloaded functions.
-
-        Args:
-            name: The name of the function to generate in python
-            fqn: The fully qualified name of the C++ class the function belongs to
-            disambiguation_cast: Optional static_cast type to apply to the function pointer to select between overloads
-        """
-        return self.DEF_TEMPLATE.format(
-            name=name,
-            fqn=fqn,
-            optional_cast=f"static_cast<{disambiguation_cast}>(" if disambiguation_cast else "",
-            optional_cast_end=")" if disambiguation_cast else ""
-        )
+    @property
+    def include_guard(self) -> str:
+        """ The include guard of the generated header """
+        return f"FPRIME_PYTHON_{flat_name(self.fpp_name)}_HPP"
 
     @abstractmethod
-    def get_type_lines(self, struct_type: Type, in_: In) -> List[str]:
-        """ Generate lines for a specific type
-        
-        This method should be implemented by subclasses to generate the lines required for a specific type. These lines
-        in turn will be wrapped in a standard initialization function by this superclass.
+    def bind(self, body: Body) -> None:
+        """ Write the pybind11 statements that bind this definition into the module `m`
 
         Args:
-            struct_type: The type object to generate lines for
-            in_: input support tuple
-        Returns:
-            A list of strings representing the lines of C++ code for the type binding
+            body: The body of the initialization function to write the statements into
         """
-        raise NotImplementedError("Subclasses must implement get_type_lines")
+
+    def hpp_includes(self) -> List[str]:
+        """ Headers the generated header needs """
+        return [SUPPORT_HEADER]
+
+    def cpp_includes(self) -> List[str]:
+        """ Headers the generated source needs, its own header first """
+        return [
+            self.include_manager.get_sibling_path(self.symbol, f"{self.file_base}.hpp"),
+            self.include_manager.get_include_path(self.symbol),
+        ]
+
+    def cpp_system_includes(self) -> List[str]:
+        """ System headers the generated source needs """
+        return []
+
+    def cpp_preamble(self, doc: CppDocBuilder) -> None:
+        """ Write anything the generated source needs at namespace scope before the binding function
+
+        Args:
+            doc: The document being built
+        """
+
+    def document(self) -> CppDocBuilder:
+        """ Build the C++ document holding the binding's header and source
+
+        Returns:
+            The document, with the initialization function declared and defined
+        """
+        doc = CppDocBuilder(
+            self.file_base,
+            description=f"{self.name} Python bindings",
+            include_guard=self.include_guard,
+            tool_name=TOOL_NAME,
+            strict=True,
+        )
+        doc.include(*self.hpp_includes())
+        doc.include(*self.cpp_includes(), output=Output.CPP)
+        doc.system_include(*self.cpp_system_includes(), output=Output.CPP)
+        self.cpp_preamble(doc)
+        doc.lines(
+            INIT_FUNCTION_DEFINITION_COMMENT.format(fqn=self.cpp_fqn),
+            margin=None,
+            output=Output.CPP,
+        )
+        function = doc.function(
+            self.init_function_name,
+            params=[("pybind11::module_&", "m")],
+            comment=lines(INIT_FUNCTION_COMMENT.format(fqn=self.cpp_fqn), margin=None),
+        )
+        self.bind(function.body)
+        return doc
+
+    def invocation(self) -> Dict[str, str]:
+        """ The call the module initialization has to make to bind this definition
+
+        Returns:
+            A mapping of the FPP scope the definition lives in to the statement invoking its
+            initialization function against that scope's pybind11 submodule
+        """
+        scope = scope_of(self.fpp_name)
+        submodule_variable = f"{MODULE_VARIABLE_PREFIX}{flat_name(scope)}"
+        return {scope: f"(void) {self.init_function_name}({submodule_variable});"}
+
+    def files(self) -> Dict[str, str]:
+        """ Generate the binding's files
+
+        Returns:
+            A mapping of file name to file contents
+        """
+        return {
+            **self.document().files(),
+            f"{self.name}{self.INVOCATION_SUFFIX}.json": json.dumps(self.invocation()),
+        }

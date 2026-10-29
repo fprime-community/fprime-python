@@ -1,82 +1,35 @@
 
 """fprime-python:
 
-An autocoder that is used to generate Python bindings for F Prime components. This module provides two functions:
- - bindings: Generate Python bindings for F Prime types and components that have the @fprime-python annotation
- - initialization: Generate the pybind11 module initialization code that ties together the generated bindings
+An autocoder that is used to generate Python bindings for F Prime components. This module provides two
+subcommands:
+ - bindings: Generate Python bindings for F Prime types and components that have the @fprime-python
+   annotation
+ - initialization: Generate the pybind11 module initialization code that ties together the generated
+   bindings
 """
 from __future__ import annotations
 
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 
-from fprime_python_model.model import FprimePythonModel
-from fprime_python_model.semantics.analysis import Analysis
-
-
-from .visitor import AnnotatedComponentVisitor
-from .include import IncludeManager
-from .pybind11_generator import get_module_lines
-
-def patch_analysis(analysis: Analysis) -> Analysis:
-	""" Fill in missing analysis information
-	
-	The visitor pattern allows us to map AST node to AST node. However, the analysis information is only indexed by AST
-	node ID through the component. Thus the visitor pattern breaks once reaching the component, or we must extend the
-	information.
-
-	Thus function takes the later approach by deriving an analysis mapping for each of the listed patch fields thus
-	allowing direct indexing by AST node ID.
-
-	WARNING: this function mutates the analysis in place.
-
-	"""
-	PATCH_FIELDS = [
-		'command_map', 'container_map', 'event_map', 'param_map', 'port_map', 'record_map',
-		'special_port_map', 'state_machine_instance_map', 'tlm_channel_map', 'tlm_channel_name_map'
-	]
-	for component in analysis.component_map.values():
-		for field in PATCH_FIELDS:
-			# Grab any previously existing mappings, starting with an empty dictionary
-			mapping = getattr(analysis, field, {})
-			# Loop through the values of the component's field mappings. Map the AST node ID to the value thus
-			# creating a direct lookup from AST node ID to analysis information for that type.
-			for value in getattr(component, field, {}).values():
-				mapping[value.get_node()._id] = value
-			setattr(analysis, field, mapping)
-
-def load_model(build_cache: Path) -> FprimePythonModel:
-	""" Load the fprime model in the given build cache
-
-	Using the standard names of the fpp-to-json output, this function loads the model for use in Python. 
-	
-	Args:
-		build_cache: Path to the build cache directory.
-	"""
-	model_load_arguments = [
-		build_cache / "fpp-ast.json",
-		build_cache / "fpp-loc-map.json",
-		build_cache / "fpp-analysis.json",
-	]
-	# Validate that all required files exist and are files
-	for path in model_load_arguments:
-		if not path.exists():
-			raise ValueError(f"Required model file {path} does not exist. Have you run fpp-to-json?")
-		if not path.is_file():
-			raise ValueError(f"Required model file {path} is not a file.")
-
-	model = FprimePythonModel(*model_load_arguments)
-	return model
+from .cpp_types import UnsupportedTypeError
+from .include import IncludeError, IncludeManager
+from .model import IMPORT_LIST_PATH, SOURCE_LIST_PATH, ModelError, load_model, read_path_list
+from .view import UnsupportedModelError
+from .pybind11_generator import INIT_FILE_BASE, render_module_file
+from .visitor import AnnotatedDefinitionVisitor
 
 
 def parse_binding_args(parser: argparse.ArgumentParser) -> None:
-	"""Register the 'binding' subcommand parser.
+	"""Register the 'bindings' subcommand parser.
 
-	The binding parser takes arguments needed to autocode binding from FPP types and will trigger when the `bindings`
-	subcommand is used.
+	The binding parser takes arguments needed to autocode bindings from FPP types and will trigger when
+	the `bindings` subcommand is used.
 
 	Args:
 		parser: Parent ArgumentParser (typically from add_subparsers()) to register
@@ -96,9 +49,21 @@ def parse_binding_args(parser: argparse.ArgumentParser) -> None:
 		type=Path,
 		nargs="+",
 		default=[],
-		help="One or more translation unit paths. Default: All TUs in model.",
+		help=f"One or more translation unit paths. Default: those listed in the build cache's"
+		     f" {SOURCE_LIST_PATH}.",
 	)
-	
+
+	# Optional flag that accepts the rest of the FPP model
+	parser.add_argument(
+		"--imports",
+		metavar="FILE",
+		type=Path,
+		nargs="+",
+		default=[],
+		help=f"FPP files the translation units depend on. Default: those listed in the build cache's"
+		     f" {IMPORT_LIST_PATH.as_posix()}.",
+	)
+
 	parser.add_argument(
 		"--prefixes",
 		metavar="PREFIX",
@@ -126,8 +91,8 @@ def parse_binding_args(parser: argparse.ArgumentParser) -> None:
 def parse_initialization_args(parser: argparse.ArgumentParser) -> None:
 	"""Register the 'initialization' subcommand parser
 
-	The initialization parser takes arguments needed to autocode pybind11 initialization from the snippets of code
-	created for the FPP components by the `bindings` subcommand.
+	The initialization parser takes arguments needed to autocode pybind11 initialization from the snippets
+	of code created for the FPP components by the `bindings` subcommand.
 
 	Args:
 		parser: Parent ArgumentParser (typically from add_subparsers()) to register
@@ -141,7 +106,7 @@ def parse_initialization_args(parser: argparse.ArgumentParser) -> None:
 		required=True,
 		help="One or more JSON files to merge into an initialization function",
 	)
-	
+
 	parser.add_argument(
 		"--header-files",
 		metavar="FILE",
@@ -161,8 +126,8 @@ def parse_initialization_args(parser: argparse.ArgumentParser) -> None:
 	parser.add_argument(
 		"--output-directory",
 		type=Path,
-		default=None,
-		help="Output directory for generated files. Default: build cache directory.",
+		required=True,
+		help="Output directory for the generated initialization file.",
 	)
 
 
@@ -176,6 +141,7 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
 		argparse.Namespace containing parsed values. The namespace includes:
 		  - build_cache: positional path to the build cache
 		  - translation_units: list of translation unit paths (may be empty)
+		  - imports: list of paths to the rest of the FPP model (may be empty)
 		  - dry_run: boolean flag indicating whether to perform side-effecting actions
 	"""
 	parser = argparse.ArgumentParser(
@@ -200,41 +166,69 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
 	parse_initialization_args(initialization_parser)
 
 	args = parser.parse_args(argv)
-	
-	# Validate build cache path
-	if args.command == "bindings" and not args.build_cache.exists():
-		raise ValueError(f"Build cache path {args.build_cache} does not exist.")
-	if args.command == "bindings" and not args.build_cache.is_dir():
-		raise ValueError(f"Build cache path {args.build_cache} is not a directory.")
-	if args.output_directory is None:
-		args.output_directory = args.build_cache
+
+	# Validate the build cache, and default the output directory to it. Only the bindings subcommand has a
+	# build cache: the initialization subcommand works from files it is handed, so it requires the flag.
+	if args.command == "bindings":
+		if not args.build_cache.exists():
+			parser.error(f"Build cache path {args.build_cache} does not exist.")
+		if not args.build_cache.is_dir():
+			parser.error(f"Build cache path {args.build_cache} is not a directory.")
+		if args.output_directory is None:
+			args.output_directory = args.build_cache
 	if not args.output_directory.exists():
-		raise ValueError(f"Output directory path {args.output_directory} does not exist.")
+		parser.error(f"Output directory path {args.output_directory} does not exist.")
 	if not args.output_directory.is_dir():
-		raise ValueError(f"Output directory path {args.output_directory} is not a directory.")
+		parser.error(f"Output directory path {args.output_directory} is not a directory.")
 	return args
 
-def write_em(output_map: Dict[Path, List[str]]) -> None:
+
+def write_em(output_map: Dict[Path, str]) -> None:
 	""" Write the output map to files """
-	for output_path, lines in output_map.items():
+	for output_path, contents in output_map.items():
 		output_path.parent.mkdir(parents=True, exist_ok=True)
 		with open(output_path, "w", encoding="utf-8") as output_file:
-			output_file.write("\n".join(lines))
+			output_file.write(contents)
+
+
+def generate_bindings(args: argparse.Namespace) -> Dict[Path, str]:
+	""" Generate the bindings for one module
+
+	The FPP files making up the model default to the lists F Prime's FPP autocoder leaves in the module's
+	build cache: its own translation units, and the transitive closure of everything they reference.
+
+	Args:
+		args: Parsed arguments of the `bindings` subcommand
+	Returns:
+		A mapping of output path to file contents
+	"""
+	sources = args.translation_units or read_path_list(args.build_cache / SOURCE_LIST_PATH)
+	imports = args.imports or read_path_list(args.build_cache / IMPORT_LIST_PATH)
+	model = load_model(sources, imports)
+	include_manager = IncludeManager(args.prefixes)
+	visitor = AnnotatedDefinitionVisitor(
+		args.output_directory, model.analysis, include_manager
+	)
+	return visitor.generate(model)
+
 
 def main(argv: List[str] | None = None) -> int:
 	""" Main program. Hi Lewis!!! """
 	args = parse_args(argv)
 
 	if args.command == "bindings":
-		model = load_model(args.build_cache)
-		include_manager = IncludeManager(args.prefixes, model.location_map)
-		visitor = AnnotatedComponentVisitor(args.output_directory, args.translation_units, model.location_map)
-
-		output = visitor.translation_units([model.analysis, include_manager], model.ast)
-	elif args.command == "initialization" and not args.dry_run:
-		output = {args.output_directory / "fprime_init.cpp": get_module_lines(args.json_files, args.header_files)}
+		# These are all "your model or your build is not what this tool needs" failures, and are the ones
+		# a user is expected to hit. A traceback would only bury them in the build log.
+		try:
+			output = generate_bindings(args)
+		except (ModelError, IncludeError, UnsupportedTypeError, UnsupportedModelError) as error:
+			print(f"[ERROR] {error}", file=sys.stderr)
+			return 1
 	elif args.command == "initialization":
-		output = {args.output_directory / "fprime_init.cpp": []}
+		init_file = args.output_directory / f"{INIT_FILE_BASE}.cpp"
+		# A dry run only reports the file name, so the model is not needed to produce it
+		contents = "" if args.dry_run else render_module_file(args.json_files, args.header_files)
+		output = {init_file: contents}
 	else:
 		assert False, f"Unreachable command branch: {args.command}"
 	print(" ".join([str(output_file) for output_file in output.keys()]))
@@ -246,4 +240,3 @@ def main(argv: List[str] | None = None) -> int:
 if __name__ == "__main__":
 	# Exit with the returned status code from main
 	raise SystemExit(main())
-

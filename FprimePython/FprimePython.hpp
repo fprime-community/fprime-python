@@ -2,35 +2,10 @@
 #ifndef FPRIME_PYTHON_HPP_
 #define FPRIME_PYTHON_HPP_
 #include <pybind11/pybind11.h>
-#include "Fw/Cmd/CmdString.hpp"
+#include <string>
 #include "Fw/Types/String.hpp"
 #include "Fw/Types/StringBase.hpp"
-
-// All strings in F Prime behave the same way: they inherit from StringBase, they store a fixed size buffer etc.
-// Thus we can create a generic type caster for all derivatives of StringBase. Since the type_caster is already
-// a template we cannot template it further, so we use a macro to generate specializations for each derived type.
-//
-// Usage: TYPE_CASTER_FW_STRING_BASE_CHILD(<string type>);
-#define TYPE_CASTER_FW_STRING_BASE_CHILD(ChildType)                                                      \
-    template <>                                                                                          \
-    struct type_caster<ChildType> {                                                                      \
-        static_assert(std::is_base_of<Fw::StringBase, ChildType>::value,                                 \
-                      "TYPE_CASTER_FW_STRING_BASE_CHILD(T) requires T to derive from Fw::StringBase");   \
-        PYBIND11_TYPE_CASTER(ChildType, io_name("str", "str"));                                          \
-                                                                                                         \
-        static handle cast(const ChildType& string, return_value_policy /*policy*/, handle /*parent*/) { \
-            return pybind11::str(string.toChar()).release();                                             \
-        }                                                                                                \
-                                                                                                         \
-        bool load(handle src, bool convert) {                                                            \
-            if (pybind11::isinstance<pybind11::str>(src)) {                                              \
-                std::string s = src.cast<std::string>();                                                 \
-                value = s.c_str();                                                                       \
-                return true;                                                                             \
-            }                                                                                            \
-            return false;                                                                                \
-        }                                                                                                \
-    }
+#include "Fw/Types/StringTemplate.hpp"
 
 //! \brief bind the deployment bindings into Python
 //!
@@ -66,15 +41,85 @@ namespace Os {
 void bind_osal(pybind11::module_& os_module);
 } // namespace Os
 
+namespace FprimePython {
+//! \brief Reject a Python string that an F Prime string of the given capacity cannot hold unchanged
+//!
+//! Fw::StringBase::operator=(const char*) copies with string_copy, which silently drops whatever does not fit and
+//! stops at the first NUL. A truncated path or command argument would then be used for logic with no indication
+//! to the caller, so such a string is refused with a Python ValueError instead.
+//!
+//! \param value The string received from Python
+//! \param capacity The capacity of the destination F Prime string, terminator included
+inline void check_string_fits(const std::string& value, Fw::StringBase::SizeType capacity) {
+    if (value.find('\0') != std::string::npos) {
+        throw pybind11::value_error("F Prime strings cannot contain NUL characters");
+    }
+    // The capacity includes the terminator, so a string of exactly the capacity does not fit
+    if (value.length() >= capacity) {
+        throw pybind11::value_error("string of " + std::to_string(value.length()) +
+                                    " UTF-8 bytes exceeds the F Prime string maximum of " +
+                                    std::to_string(capacity - 1) + " bytes");
+    }
+}
+
+//! \brief Reject a string longer than the size it is serialized at: its declared size, capped for events and telemetry
+//!
+//! A port, event or telemetry string reaches C++ as an Fw::StringBase that check_string_fits has bounded only by
+//! its scratch capacity, not by the model. The model's `string size` is otherwise enforced only where F Prime
+//! serializes the string, by dropping the excess: on an async port, and for events and telemetry, which are further
+//! capped at FW_LOG_STRING_MAX_SIZE and FW_TLM_STRING_MAX_SIZE. A sync port or internal port passes it on whole. The
+//! generated bindings call this with the model's bound, capped as F Prime caps it, so that an over-long string is
+//! refused on every path.
+//!
+//! \param value The string received from Python
+//! \param size The size the string is serialized at, in bytes, terminator excluded
+inline void check_declared_size(const Fw::StringBase& value, FwSizeType size) {
+    if (static_cast<FwSizeType>(value.length()) > size) {
+        throw pybind11::value_error("string of " + std::to_string(value.length()) +
+                                    " UTF-8 bytes exceeds its maximum size of " + std::to_string(size) +
+                                    " bytes");
+    }
+}
+}  // namespace FprimePython
+
 namespace pybind11 {
 namespace detail {
 
-TYPE_CASTER_FW_STRING_BASE_CHILD(Fw::String);
-TYPE_CASTER_FW_STRING_BASE_CHILD(Fw::CmdStringArg);
+// Every F Prime string of a fixed capacity is a Fw::StringTemplate<size> instantiation -- Fw::String,
+// Fw::CmdStringArg, Fw::ParamString, Fw::FileNameString and the rest are aliases of one -- so a single partial
+// specialization casts them all. Fw::StringBase itself is not an instantiation and is specialized separately
+// below.
+//
+// A Python str that does not fit the instantiation's capacity is rejected with ValueError, see check_string_fits.
+template <Fw::StringBase::SizeType size>
+struct type_caster<Fw::StringTemplate<size>> {
+    PYBIND11_TYPE_CASTER(Fw::StringTemplate<size>, io_name("str", "str"));
+
+    static handle cast(const Fw::StringTemplate<size>& string,
+                       return_value_policy /*policy*/,
+                       handle /*parent*/) {
+        return pybind11::str(string.toChar()).release();
+    }
+
+    bool load(handle src, bool convert) {
+        if (pybind11::isinstance<pybind11::str>(src)) {
+            std::string s = src.cast<std::string>();
+            FprimePython::check_string_fits(s, value.getCapacity());
+            value = s.c_str();
+            return true;
+        }
+        return false;
+    }
+};
 
 // This will bind Fw::StringBase itself into the python layer. Since StringBase cannot be instantiated directly,
 // Fw::String is used as the concrete type for the value member, which provides a backing store for the Python string
 // to be copied into and then passed out as a StringBase reference.
+//
+// The check here is against the Fw::String backing store only, as the size the argument is serialized at is not
+// known here. The generated bindings of ports, events and telemetry check that size (the declared size, capped for
+// events and telemetry) with check_declared_size, and the generated setters check struct, array and inline-array
+// string members against their own capacity.
 template <>
 struct type_caster<Fw::StringBase> {
   protected:
@@ -107,6 +152,7 @@ struct type_caster<Fw::StringBase> {
     bool load(handle src, bool convert) {
         if (pybind11::isinstance<pybind11::str>(src)) {
             std::string s = src.cast<std::string>();
+            FprimePython::check_string_fits(s, value.getCapacity());
             value = s.c_str();
             return true;
         }
