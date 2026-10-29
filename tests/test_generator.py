@@ -120,3 +120,34 @@ def test_sized_string_return_is_checked_against_its_declared_size(files: Dict[st
     assert check in source
     assert source.index("Fw::String result = return_value.cast<Fw::String>();") < source.index(check)
     assert source.index(check) < source.index("return result;")
+
+
+@pytest.fixture
+def hooks(tmp_path: Path) -> Dict[str, str]:
+    return generate("Hooks.fpp", tmp_path)
+
+
+def test_overflow_hooks_are_forwarded_into_python(hooks: Dict[str, str]) -> None:
+    header = hooks["PyHooks.hpp"]
+    assert "void textIn_overflowHook(" in header
+    assert "void poke_overflowHook(const Fw::InternalInterfaceString& msg) override;" in header
+    assert "void DO_cmdOverflowHook(" in header
+    source = hooks["PyHooks.cpp"]
+    assert 'm_self.attr("textIn_overflowHook")(portNum, msg);' in source
+    assert 'm_self.attr("poke_overflowHook")(msg);' in source
+    # A command's hook gets the opcode and sequence number, not the command's arguments
+    assert 'm_self.attr("DO_cmdOverflowHook")(opCode, cmdSeq);' in source
+
+
+def test_overflow_hooks_get_python_stubs(hooks: Dict[str, str]) -> None:
+    template = hooks["PyHooks.template.py"]
+    assert "def textIn_overflowHook(self, portNum, msg):" in template
+    assert "def poke_overflowHook(self, msg):" in template
+    hook = template[template.index("def DO_cmdOverflowHook(self, opCode, cmdSeq):"):]
+    assert "self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.BUSY))" in hook
+
+
+def test_members_without_hook_get_no_overflow_hook(files: Dict[str, str], hooks: Dict[str, str]) -> None:
+    assert "dropIn_overflowHook" not in hooks["PyHooks.cpp"]
+    assert "overflowHook" not in files["PyQueued.cpp"]
+    assert "overflowHook" not in files["PyQueued.template.py"]
