@@ -18,7 +18,14 @@ from fprime_cpp_codegen import Body, ClassBuilder, CppDocBuilder, Output
 from .binding_generator import BindingGenerator, expression_chain, standard_def
 from .constants import SELF_MEMBER, SUPPORT_HEADER, TOOL_NAME
 from .include import IncludeManager
-from .view import CommandView, ComponentView, FormalParameterView, HandlerView, ParameterView
+from .view import (
+    CommandView,
+    ComponentView,
+    FormalParameterView,
+    HandlerView,
+    OverflowHookView,
+    ParameterView,
+)
 
 
 #: Telemetry write bindings keep the default timestamp argument F Prime declares, so that Python callers
@@ -277,11 +284,11 @@ PYTHON_PORT_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
         pass
 '''
 
-#: Stub for one command handler in the Python implementation template
+#: Stub for one command handler or command overflow hook in the Python implementation template
 PYTHON_COMMAND_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
-        """ Handle the {name} command """
-        # TODO: Implement command handler
-        self.cmdResponse_out({prefix}, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.OK))
+        """ Handle the {name} {kind} """
+        # TODO: Implement {kind} handler
+        self.cmdResponse_out({prefix}, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.{response}))
 '''
 
 
@@ -346,6 +353,16 @@ class ComponentImplementationGenerator(object):
                 'Call auto-coded initialization function storing the C++ "this" object for Python'
             )
             body.line(f'this->{SELF_MEMBER}.attr("_init_ac")(this);')
+            # A hook runs only when the queue fills, so a missing one is reported at startup, not first overflow.
+            # It is looked up on the class, which the base class's fall-through to the C++ object cannot satisfy,
+            # and the Python object is released first so it cannot outlive the interpreter if teardown is skipped
+            for hook in self.component.overflow_hooks:
+                with body.if_(f'!pybind11::hasattr(pybind11::type::of(this->{SELF_MEMBER}), "{hook.handler_name}")'):
+                    body.line(f"this->{SELF_MEMBER} = pybind11::none();")
+                    body.line(
+                        f'throw pybind11::attribute_error("{self.name} does not implement overflow hook'
+                        f' {hook.handler_name}");'
+                    )
         body.comment("Continue the standard initialization of F Prime")
         arguments = ", ".join(name for _, name, _ in self._init_params())
         body.line(f"{self.component.base_class}::init({arguments});")
@@ -436,7 +453,7 @@ class ComponentImplementationGenerator(object):
                     ret=handler.handler_return_type,
                     params=handler.handler_parameters,
                     override=True,
-                    comment=f"Handler for {handler.HANDLER_KIND} {handler.name}",
+                    comment=handler.description,
                 )
                 self._write_forwarding_call(override.body, handler)
 
@@ -556,14 +573,17 @@ class ComponentImplementationGenerator(object):
         for handler in self.component.handlers:
             args = "".join(f", {name}" for name in handler.handler_arguments)
             # A command handler is not left to fall off the end: the ground waits for a response, so the
-            # stub sends one
-            if isinstance(handler, CommandView):
+            # stub sends one. A command's overflow hook answers too, since F Prime dropped the command unanswered
+            overflowed = isinstance(handler, OverflowHookView) and handler.is_command_hook
+            if isinstance(handler, CommandView) or overflowed:
                 stubs.append(
                     PYTHON_COMMAND_HANDLER_TEMPLATE.format(
                         handler=handler.handler_name,
                         name=handler.name,
+                        kind=handler.HANDLER_KIND,
                         args=args,
                         prefix=", ".join(name for _, name, _ in handler.HANDLER_PREFIX),
+                        response="BUSY" if overflowed else "OK",
                     )
                 )
                 continue

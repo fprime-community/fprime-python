@@ -109,13 +109,13 @@ class UnsupportedModelError(Exception):
 
 
 class HandlerView(ABC):
-    """ One component member that F Prime declares a pure virtual handler for
+    """ One pure virtual handler F Prime declares for a component member
 
     A handler's signature is a fixed prefix -- the port number for a general port, the opcode and the
-    command sequence number for a command, nothing for an internal port -- followed by the member's own
-    formal parameters. The generated C++ override, the call it forwards into Python, and the stub in the
-    Python template all have to agree on that signature, so it is spelled once here and each generator
-    reads it back rather than repeating the prefix.
+    command sequence number for a command, nothing for an internal port -- followed by its formal parameters:
+    the member's own, or none for a command's overflow hook. The generated C++ override, the call it forwards
+    into Python, and the stub in the Python template all have to agree on that signature, so it is spelled once
+    here and each generator reads it back rather than repeating the prefix.
     """
 
     #: The handler's fixed leading parameters, as (C++ type, name, doc comment) triples
@@ -133,6 +133,11 @@ class HandlerView(ABC):
     @abstractmethod
     def handler_name(self) -> str:
         """ The name of the handler F Prime declares for this member """
+
+    @property
+    def description(self) -> str:
+        """ What the handler is, as it reads in a generated comment """
+        return f"Handler for {self.HANDLER_KIND} {self.name}"
 
     @property
     @abstractmethod
@@ -312,6 +317,47 @@ class CommandView(HandlerView):
         ]
 
 
+class OverflowHookView(HandlerView):
+    """ The overflow hook F Prime declares for a member with `hook` queue-full behavior
+
+    F Prime calls it instead of the handler when the message cannot be queued. It takes the handler's arguments,
+    except that a command's hook gets only the opcode and the command sequence number. The handler prefix is the
+    owner's, so it is copied onto the instance rather than declared by the class.
+    """
+
+    def __init__(self, owner: HandlerView) -> None:
+        """ Wrap the hook of a port, internal port or command """
+        self.owner = owner
+        self.HANDLER_PREFIX = owner.HANDLER_PREFIX
+        self.HANDLER_KIND = f"{owner.HANDLER_KIND} overflow hook"
+
+    @property
+    def is_command_hook(self) -> bool:
+        """ Whether the hook is a command's, which takes no command arguments and must answer the command """
+        return isinstance(self.owner, CommandView)
+
+    @property
+    def description(self) -> str:
+        """ What the hook is, as it reads in a generated comment """
+        return f"Overflow hook for {self.owner.HANDLER_KIND} {self.name}"
+
+    @property
+    def name(self) -> str:
+        """ The owning member's name as written in the model """
+        return self.owner.name
+
+    @property
+    def handler_name(self) -> str:
+        """ The name of the overflow hook F Prime declares for the owning member """
+        suffix = "cmdOverflowHook" if self.is_command_hook else "overflowHook"
+        return f"{self.owner.name}_{suffix}"
+
+    @property
+    def parameters(self) -> List[FormalParameterView]:
+        """ The owning member's formal parameters, none for a command """
+        return [] if self.is_command_hook else self.owner.parameters
+
+
 class EventView:
     """ One event of a component """
 
@@ -459,49 +505,43 @@ class ComponentView:
         return bool(self.commands)
 
     @property
-    def has_queue_full_hooks(self) -> bool:
-        """ Whether anything on the component declares `hook` queue-full behavior
-
-        `hook` makes F Prime declare a pure virtual overflow hook -- `<port>_overflowHook`,
-        `<internal>_overflowHook` or `<cmd>_cmdOverflowHook` -- alongside the handler. Async input ports,
-        internal ports and async commands can each ask for one.
+    def overflow_hooks(self) -> List[OverflowHookView]:
+        """ The overflow hooks of the async input ports, internal ports and async commands with `hook` queue-full
+        behavior, in that order
         """
-        for port in self.component.port_map.values():
-            if isinstance(port, fpp.PortInstance.General):
-                kind = port.kind
-                if (
-                    isinstance(kind, fpp.GeneralKind.AsyncInput)
-                    and kind.queue_full == fpp.ast.QueueFull.Hook
-                ):
-                    return True
-            elif (
-                isinstance(port, fpp.PortInstance.Internal)
-                and port.queue_full == fpp.ast.QueueFull.Hook
-            ):
-                return True
-        return any(
-            isinstance(command.command.kind, fpp.NonParamKind.Async)
-            and command.command.kind.queue_full == fpp.ast.QueueFull.Hook
+        hooks = [
+            OverflowHookView(port)
+            for port in self.input_ports
+            if isinstance(port.port.kind, fpp.GeneralKind.AsyncInput)
+            and port.port.kind.queue_full == fpp.ast.QueueFull.Hook
+        ]
+        hooks += [
+            OverflowHookView(port)
+            for port in self.internal_ports
+            if port.port.queue_full == fpp.ast.QueueFull.Hook
+        ]
+        hooks += [
+            OverflowHookView(command)
             for command in self.commands
-        )
+            if isinstance(command.command.kind, fpp.NonParamKind.Async)
+            and command.command.kind.queue_full == fpp.ast.QueueFull.Hook
+        ]
+        return hooks
 
     def check_supported(self) -> None:
         """ Reject a component whose features this autocoder cannot bind
 
-        F Prime declares a pure virtual handler for every state machine action and guard, for every data
-        product container, and for every `hook` queue-full overflow. None has a Python counterpart yet --
-        an action takes a state machine id and a signal, a container handler takes a `Fw::DpContainer`, and
-        an overflow hook takes the message that could not be queued -- so generating the component anyway
-        would leave an abstract class and fail at link time, a long way from the cause.
+        F Prime declares a pure virtual handler for every state machine action and guard, and for every data
+        product container. Neither has a Python counterpart yet -- an action takes a state machine id and a
+        signal, and a container handler takes a `Fw::DpContainer` -- so generating the component anyway would
+        leave an abstract class and fail at link time, a long way from the cause.
 
         Raises:
-            UnsupportedModelError: The component has state machine instances, data products or a `hook`
-                queue-full declaration
+            UnsupportedModelError: The component has state machine instances or data products
         """
         unsupported = [
             ("state machine instances", self.component.has_state_machine_instances),
             ("data products", self.component.has_data_products),
-            ("`hook` queue-full behavior", self.has_queue_full_hooks),
         ]
         for feature, present in unsupported:
             if present:
@@ -574,14 +614,16 @@ class ComponentView:
 
     @property
     def handlers(self) -> List[HandlerView]:
-        """ Every component member F Prime declares a handler for, in generation order
+        """ Every handler F Prime declares, members first and overflow hooks last, in generation order
 
-        The three families get the same forwarding C++ override and a stub in the Python template (a command's
-        stub also sends its response), so the generators walk this one list rather than each family in turn.
+        Every family gets the same forwarding C++ override and a stub in the Python template (a command's
+        stub, and its overflow hook's, also sends a response), so the generators walk this one list rather than
+        each family in turn.
         """
         handlers: List[HandlerView] = list(self.input_ports)
         handlers += self.internal_ports
         handlers += self.commands
+        handlers += self.overflow_hooks
         return handlers
 
     @property
