@@ -353,6 +353,13 @@ class ComponentImplementationGenerator(object):
                 'Call auto-coded initialization function storing the C++ "this" object for Python'
             )
             body.line(f'this->{SELF_MEMBER}.attr("_init_ac")(this);')
+            # A hook runs only when the queue fills, so a missing one is reported at startup, not first overflow
+            for hook in self.component.overflow_hooks:
+                with body.if_(f'!pybind11::hasattr(this->{SELF_MEMBER}, "{hook.handler_name}")'):
+                    body.line(
+                        f'throw pybind11::attribute_error("{self.name} does not implement overflow hook'
+                        f' {hook.handler_name}");'
+                    )
         body.comment("Continue the standard initialization of F Prime")
         arguments = ", ".join(name for _, name, _ in self._init_params())
         body.line(f"{self.component.base_class}::init({arguments});")
@@ -443,7 +450,7 @@ class ComponentImplementationGenerator(object):
                     ret=handler.handler_return_type,
                     params=handler.handler_parameters,
                     override=True,
-                    comment=f"Handler for {handler.HANDLER_KIND} {handler.name}",
+                    comment=handler.description,
                 )
                 self._write_forwarding_call(override.body, handler)
 
@@ -564,7 +571,7 @@ class ComponentImplementationGenerator(object):
             args = "".join(f", {name}" for name in handler.handler_arguments)
             # A command handler is not left to fall off the end: the ground waits for a response, so the
             # stub sends one. A command's overflow hook answers too, since F Prime dropped the command unanswered
-            overflowed = isinstance(handler, OverflowHookView) and isinstance(handler.owner, CommandView)
+            overflowed = isinstance(handler, OverflowHookView) and handler.is_command_hook
             if isinstance(handler, CommandView) or overflowed:
                 stubs.append(
                     PYTHON_COMMAND_HANDLER_TEMPLATE.format(
