@@ -19,12 +19,13 @@ from .binding_generator import BindingGenerator, expression_chain, standard_def
 from .constants import SELF_MEMBER, SUPPORT_HEADER, TOOL_NAME
 from .include import IncludeManager
 from .view import (
+    ArgumentView,
     CommandView,
     ComponentView,
-    FormalParameterView,
     HandlerView,
     OverflowHookView,
     ParameterView,
+    StateMachineGuardView,
 )
 
 
@@ -55,7 +56,7 @@ def checked_def(
     name: str,
     fqn: str,
     prefix: Sequence[Tuple[str, str, str]],
-    params: Sequence[FormalParameterView],
+    params: Sequence[ArgumentView],
     cap: Optional[str] = None,
 ) -> Optional[str]:
     """ Get a binding that checks each sized string argument against the size it is serialized at before the call
@@ -103,7 +104,7 @@ def base_class_methods(component: ComponentView) -> List[str]:
     F Prime declares these `protected`, so the generated class re-exposes them with using-declarations
     and the bindings take their addresses. They are the methods a Python implementation calls to act on
     the rest of the topology: dispatching its own queue, reading the time, responding to commands,
-    invoking its output ports, and sending events.
+    invoking its output ports, sending events, and reading and signalling its state machine instances.
 
     Args:
         component: The component to list the methods of
@@ -123,6 +124,9 @@ def base_class_methods(component: ComponentView) -> List[str]:
     methods += [port.connection_check_name for port in component.output_ports]
     methods += [port.invoker_name for port in component.internal_ports]
     methods += [event.dispatch_name for event in component.events]
+    for instance in component.state_machine_instances:
+        methods.append(instance.get_state_name)
+        methods += [name for name, _ in instance.send_signals]
     return methods
 
 
@@ -134,29 +138,37 @@ class ComponentBindingGenerator(BindingGenerator):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, component: fpp.Component
+        self,
+        include_manager: IncludeManager,
+        analysis: fpp.Analysis,
+        symbol: fpp.Symbol.Variant,
+        component: fpp.Component,
     ) -> None:
         """ Initialize the generator for one component
 
         Args:
             include_manager: Resolves the include paths of the headers the binding needs
+            analysis: The analyzed model the component is part of
             symbol: The symbol of the component being bound
             component: The analyzed component being bound
         """
         super().__init__(include_manager, symbol)
-        self.component = ComponentView(component)
+        self.component = ComponentView(analysis, component)
 
     def bind(self, body: Body) -> None:
         """ Write the pybind11 statements binding this component """
         fqn = self.cpp_fqn
         component = self.component
-        signatures: Dict[str, Tuple[Sequence[Tuple[str, str, str]], List[FormalParameterView], Optional[str]]] = {}
+        signatures: Dict[str, Tuple[Sequence[Tuple[str, str, str]], Sequence[ArgumentView], Optional[str]]] = {}
         for port in component.output_ports:
             signatures[port.invoker_name] = (port.HANDLER_PREFIX, port.parameters, None)
         for internal in component.internal_ports:
             signatures[internal.invoker_name] = (internal.HANDLER_PREFIX, internal.parameters, None)
         for event in component.events:
             signatures[event.dispatch_name] = ((), event.parameters, "FW_LOG_STRING_MAX_SIZE")
+        for instance in component.state_machine_instances:
+            for name, values in instance.send_signals:
+                signatures[name] = ((), values, None)
         links = []
         for method in base_class_methods(component):
             checked = checked_def(method, fqn, *signatures[method]) if method in signatures else None
@@ -175,7 +187,25 @@ class ComponentBindingGenerator(BindingGenerator):
             )
             for channel in self.component.channels
         ]
-        body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))
+        instances = component.state_machine_instances
+        if not instances:
+            body.raw(expression_chain(f'pybind11::class_<{fqn}>(m, "{self.name}")', links))
+            return
+        # The state machine ids are bound inside the component's class, so the class is kept to bind them into
+        body.lines(f'pybind11::class_<{fqn}> component(m, "{self.name}");', margin=None)
+        body.raw(expression_chain("component", links))
+        body.blank()
+        body.raw(
+            expression_chain(
+                f'pybind11::native_enum<{fqn}::SmId>(component, "SmId", "enum.Enum")',
+                [f'.value("{instance.name}", {fqn}::SmId::{instance.name})' for instance in instances]
+                + [".finalize()"],
+            )
+        )
+
+    def cpp_system_includes(self) -> List[str]:
+        """ System headers the generated source needs: `native_enum` for the state machine ids """
+        return ["pybind11/native_enum.h"] if self.component.state_machine_instances else []
 
     def cpp_includes(self) -> List[str]:
         """ Get the C++ includes for a component type
@@ -284,6 +314,14 @@ PYTHON_PORT_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
         pass
 '''
 
+#: Stub for one state machine guard in the Python implementation template. A guard has to return a bool, and
+#: False is the safe default: the guarded transition is not taken until the guard is implemented.
+PYTHON_GUARD_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
+        """ Handle the {name} {kind} """
+        # TODO: Implement {kind}, returning a bool. Returning False (this stub) blocks the transition
+        return False
+'''
+
 #: Stub for one command handler or command overflow hook in the Python implementation template
 PYTHON_COMMAND_HANDLER_TEMPLATE = '''    def {handler}(self{args}):
         """ Handle the {name} {kind} """
@@ -304,18 +342,23 @@ class ComponentImplementationGenerator(object):
     """
 
     def __init__(
-        self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, component: fpp.Component
+        self,
+        include_manager: IncludeManager,
+        analysis: fpp.Analysis,
+        symbol: fpp.Symbol.Variant,
+        component: fpp.Component,
     ) -> None:
         """ Initialize the generator for one component
 
         Args:
             include_manager: Resolves the include paths of the headers the implementation needs
+            analysis: The analyzed model the component is part of
             symbol: The symbol of the component being implemented
             component: The analyzed component being implemented
         """
         self.include_manager = include_manager
         self.symbol = symbol
-        self.component = ComponentView(component)
+        self.component = ComponentView(analysis, component)
 
     @property
     def name(self) -> str:
@@ -363,6 +406,14 @@ class ComponentImplementationGenerator(object):
                         f'throw pybind11::attribute_error("{self.name} does not implement overflow hook'
                         f' {hook.handler_name}");'
                     )
+            # Likewise an action or guard runs only on the transitions that name it, which may be rare
+            for handler in self.component.state_machine_handlers:
+                with body.if_(f'!pybind11::hasattr(pybind11::type::of(this->{SELF_MEMBER}), "{handler.handler_name}")'):
+                    body.line(f"this->{SELF_MEMBER} = pybind11::none();")
+                    body.line(
+                        f'throw pybind11::attribute_error("{self.name} does not implement {handler.HANDLER_KIND}'
+                        f' {handler.handler_name}");'
+                    )
         body.comment("Continue the standard initialization of F Prime")
         arguments = ", ".join(name for _, name, _ in self._init_params())
         body.line(f"{self.component.base_class}::init({arguments});")
@@ -395,6 +446,13 @@ class ComponentImplementationGenerator(object):
             body.line(f"{call};")
             return
         body.line(f"pybind11::object return_value = {call};")
+        if isinstance(handler, StateMachineGuardView):
+            # pybind11 would convert any object to a bool, None included, so a guard that forgot to return
+            # would silently block its transition
+            with body.if_("!pybind11::isinstance<pybind11::bool_>(return_value)"):
+                body.line(
+                    f'throw pybind11::type_error("{self.name}.{handler.handler_name} must return a bool");'
+                )
         size = handler.return_declared_size
         if size is None:
             body.line(f"return return_value.cast<{handler.handler_return_type}>();")
@@ -452,6 +510,7 @@ class ComponentImplementationGenerator(object):
                     handler.handler_name,
                     ret=handler.handler_return_type,
                     params=handler.handler_parameters,
+                    const=handler.IS_CONST,
                     override=True,
                     comment=handler.description,
                 )
@@ -470,6 +529,9 @@ class ComponentImplementationGenerator(object):
         using_statements = base_class_methods(component) + [
             channel.write_name for channel in component.channels
         ]
+        # The state machine ids name the instances to Python, which compares an action's `smId` against them
+        if component.state_machine_instances:
+            using_statements.append("SmId")
         if using_statements:
             with cls.public("Base class members exposed to Python"):
                 # The method names come from the model, so this is not margin-stripped
@@ -584,6 +646,13 @@ class ComponentImplementationGenerator(object):
                         args=args,
                         prefix=", ".join(name for _, name, _ in handler.HANDLER_PREFIX),
                         response="BUSY" if overflowed else "OK",
+                    )
+                )
+                continue
+            if isinstance(handler, StateMachineGuardView):
+                stubs.append(
+                    PYTHON_GUARD_HANDLER_TEMPLATE.format(
+                        handler=handler.handler_name, name=handler.name, kind=handler.HANDLER_KIND, args=args
                     )
                 )
                 continue

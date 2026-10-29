@@ -125,11 +125,12 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
             return
         symbol = self.symbol_of(node)
         component = self.analysis.component_map[symbol]
+        view = ComponentView(self.analysis, component)
         # Refuse up front rather than generating a class that will not link
-        ComponentView(component).check_supported()
-        self.emit(ComponentBindingGenerator(self.include_manager, symbol, component).files())
+        view.check_supported()
+        self.emit(ComponentBindingGenerator(self.include_manager, self.analysis, symbol, component).files())
         self.emit(
-            ComponentImplementationGenerator(self.include_manager, symbol, component).files()
+            ComponentImplementationGenerator(self.include_manager, self.analysis, symbol, component).files()
         )
 
     def visit_DefTopology(self, node: fpp.ast.DefTopology) -> None:
