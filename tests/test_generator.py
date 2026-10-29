@@ -129,6 +129,7 @@ def hooks(tmp_path: Path) -> Dict[str, str]:
 
 def test_overflow_hooks_are_forwarded_into_python(hooks: Dict[str, str]) -> None:
     header = hooks["PyHooks.hpp"]
+    assert "//! Overflow hook for command DO" in header
     assert "void textIn_overflowHook(" in header
     assert "void poke_overflowHook(const Fw::InternalInterfaceString& note) override;" in header
     assert "void DO_cmdOverflowHook(" in header
@@ -149,14 +150,17 @@ def test_missing_overflow_hooks_are_reported_at_init(hooks: Dict[str, str]) -> N
     source = hooks["PyHooks.cpp"]
     init = source[source.index('.attr("_init_ac")(this);'):source.index("PyHooksComponentBase::init(")]
     for hook in ("textIn_overflowHook", "poke_overflowHook", "DO_cmdOverflowHook"):
-        assert f'if (!pybind11::hasattr(this->m_self, "{hook}")) {{' in init
-        assert f'throw pybind11::attribute_error("PyHooks does not implement overflow hook {hook}");' in init
+        check = init[init.index(f'if (!pybind11::hasattr(pybind11::type::of(this->m_self), "{hook}")) {{'):]
+        check = check[:check.index("}")]
+        assert "this->m_self = pybind11::none();" in check
+        assert f'throw pybind11::attribute_error("PyHooks does not implement overflow hook {hook}");' in check
 
 
 def test_overflow_hooks_get_python_stubs(hooks: Dict[str, str]) -> None:
     template = hooks["PyHooks.template.py"]
     assert "def textIn_overflowHook(self, portNum, note):" in template
     assert "def poke_overflowHook(self, note):" in template
+    assert '""" Handle the DO command overflow hook """' in template
     start = template.index("def DO_cmdOverflowHook(self, opCode, cmdSeq):")
     end = template.find("\n    def ", start)
     hook = template[start:end if end != -1 else len(template)]

@@ -353,9 +353,12 @@ class ComponentImplementationGenerator(object):
                 'Call auto-coded initialization function storing the C++ "this" object for Python'
             )
             body.line(f'this->{SELF_MEMBER}.attr("_init_ac")(this);')
-            # A hook runs only when the queue fills, so a missing one is reported at startup, not first overflow
+            # A hook runs only when the queue fills, so a missing one is reported at startup, not first overflow.
+            # It is looked up on the class, which the base class's fall-through to the C++ object cannot satisfy,
+            # and the Python object is released first so it cannot outlive the interpreter if teardown is skipped
             for hook in self.component.overflow_hooks:
-                with body.if_(f'!pybind11::hasattr(this->{SELF_MEMBER}, "{hook.handler_name}")'):
+                with body.if_(f'!pybind11::hasattr(pybind11::type::of(this->{SELF_MEMBER}), "{hook.handler_name}")'):
+                    body.line(f"this->{SELF_MEMBER} = pybind11::none();")
                     body.line(
                         f'throw pybind11::attribute_error("{self.name} does not implement overflow hook'
                         f' {hook.handler_name}");'

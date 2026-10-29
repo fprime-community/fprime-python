@@ -113,9 +113,9 @@ class HandlerView(ABC):
 
     A handler's signature is a fixed prefix -- the port number for a general port, the opcode and the
     command sequence number for a command, nothing for an internal port -- followed by its formal parameters:
-    the member's own, or none for a command's overflow hook. The generated C++ override, the call it forwards into Python, and the stub in the
-    Python template all have to agree on that signature, so it is spelled once here and each generator
-    reads it back rather than repeating the prefix.
+    the member's own, or none for a command's overflow hook. The generated C++ override, the call it forwards
+    into Python, and the stub in the Python template all have to agree on that signature, so it is spelled once
+    here and each generator reads it back rather than repeating the prefix.
     """
 
     #: The handler's fixed leading parameters, as (C++ type, name, doc comment) triples
@@ -338,7 +338,7 @@ class OverflowHookView(HandlerView):
 
     @property
     def description(self) -> str:
-        """ The hook as F Prime's own generated comment names it """
+        """ What the hook is, as it reads in a generated comment """
         return f"Overflow hook for {self.owner.HANDLER_KIND} {self.name}"
 
     @property
@@ -617,7 +617,8 @@ class ComponentView:
         """ Every handler F Prime declares, members first and overflow hooks last, in generation order
 
         Every family gets the same forwarding C++ override and a stub in the Python template (a command's
-        stub, and its overflow hook's, also sends a response), so the generators walk this one list rather than each family in turn.
+        stub, and its overflow hook's, also sends a response), so the generators walk this one list rather than
+        each family in turn.
         """
         handlers: List[HandlerView] = list(self.input_ports)
         handlers += self.internal_ports
