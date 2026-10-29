@@ -130,24 +130,42 @@ def hooks(tmp_path: Path) -> Dict[str, str]:
 def test_overflow_hooks_are_forwarded_into_python(hooks: Dict[str, str]) -> None:
     header = hooks["PyHooks.hpp"]
     assert "void textIn_overflowHook(" in header
-    assert "void poke_overflowHook(const Fw::InternalInterfaceString& msg) override;" in header
+    assert "void poke_overflowHook(const Fw::InternalInterfaceString& note) override;" in header
     assert "void DO_cmdOverflowHook(" in header
     source = hooks["PyHooks.cpp"]
-    assert 'm_self.attr("textIn_overflowHook")(portNum, msg);' in source
-    assert 'm_self.attr("poke_overflowHook")(msg);' in source
-    # A command's hook gets the opcode and sequence number, not the command's arguments
-    assert 'm_self.attr("DO_cmdOverflowHook")(opCode, cmdSeq);' in source
+    calls = [
+        'm_self.attr("textIn_overflowHook")(portNum, note);',
+        'm_self.attr("poke_overflowHook")(note);',
+        # A command's hook gets the opcode and sequence number, not the command's arguments
+        'm_self.attr("DO_cmdOverflowHook")(opCode, cmdSeq);',
+    ]
+    for call in calls:
+        # The hook runs on the caller's thread, so it must take the GIL itself before calling Python
+        body = source[source.rindex("PyHooks ::", 0, source.index(call)):source.index(call)]
+        assert "pybind11::gil_scoped_acquire acquired{};" in body
+
+
+def test_missing_overflow_hooks_are_reported_at_init(hooks: Dict[str, str]) -> None:
+    source = hooks["PyHooks.cpp"]
+    init = source[source.index('.attr("_init_ac")(this);'):source.index("PyHooksComponentBase::init(")]
+    for hook in ("textIn_overflowHook", "poke_overflowHook", "DO_cmdOverflowHook"):
+        assert f'if (!pybind11::hasattr(this->m_self, "{hook}")) {{' in init
+        assert f'throw pybind11::attribute_error("PyHooks does not implement overflow hook {hook}");' in init
 
 
 def test_overflow_hooks_get_python_stubs(hooks: Dict[str, str]) -> None:
     template = hooks["PyHooks.template.py"]
-    assert "def textIn_overflowHook(self, portNum, msg):" in template
-    assert "def poke_overflowHook(self, msg):" in template
-    hook = template[template.index("def DO_cmdOverflowHook(self, opCode, cmdSeq):"):]
+    assert "def textIn_overflowHook(self, portNum, note):" in template
+    assert "def poke_overflowHook(self, note):" in template
+    start = template.index("def DO_cmdOverflowHook(self, opCode, cmdSeq):")
+    end = template.find("\n    def ", start)
+    hook = template[start:end if end != -1 else len(template)]
     assert "self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.BUSY))" in hook
 
 
 def test_members_without_hook_get_no_overflow_hook(files: Dict[str, str], hooks: Dict[str, str]) -> None:
     assert "dropIn_overflowHook" not in hooks["PyHooks.cpp"]
+    assert "PLAIN_cmdOverflowHook" not in hooks["PyHooks.cpp"]
+    assert "PLAIN_cmdOverflowHook" not in hooks["PyHooks.template.py"]
     assert "overflowHook" not in files["PyQueued.cpp"]
     assert "overflowHook" not in files["PyQueued.template.py"]
