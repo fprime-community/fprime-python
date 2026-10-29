@@ -69,18 +69,39 @@ Once finished, the python bindings will be autocoded and included in the next bu
 as shown below). This will also produce a `<component>.template.py` file in the component folder as a basic template for
 implementing components in python.
 
-Every port, command, event, telemetry channel, parameter and internal port of the component is bound. Four
-component features cannot be bound yet, because F Prime declares a handler for each that has no Python equivalent:
+Every port, command, event, telemetry channel, parameter and internal port of the component is bound, as is the
+overflow hook of each member with `hook` queue-full behavior (see below). Three component features cannot be bound
+yet, because F Prime declares a handler for each that has no Python equivalent:
 
 | Feature | Why | What happens |
 | --- | --- | --- |
 | serial port | its handler takes a serialization buffer | rejected with an error naming the port |
 | state machine instance | its actions and guards take a state machine id and a signal | rejected with an error naming the component |
 | data product container | its handler takes a `Fw::DpContainer` | rejected with an error naming the component |
-| `hook` queue-full behavior | its overflow hook takes the message that could not be queued | rejected with an error naming the component |
 
 In each case the autocoder refuses rather than generating a class that would leave the handler unimplemented and
 fail to link. Drop the `@ fprime-python` annotation to implement such a component in C++ instead.
+
+### Queue-Full Overflow Hooks
+
+An async input port, internal port or async command declared with `hook` queue-full behavior gets an overflow hook
+in Python next to its handler. When the component's queue is full, F Prime calls the hook instead of queuing the
+message, and the message is dropped once the hook returns.
+
+| Member | Hook | Arguments |
+| --- | --- | --- |
+| `async input port textIn: Text hook` | `textIn_overflowHook` | `portNum` and the port's arguments |
+| `internal port poke(msg: string size 5) hook` | `poke_overflowHook` | the internal port's arguments |
+| `async command DO(n: U32) hook` | `DO_cmdOverflowHook` | `opCode` and `cmdSeq` only |
+
+The hook runs on the thread of the caller that found the queue full, not on the component's thread, so keep it short
+and do not block in it. F Prime does not answer a command it dropped: the template's command hook sends `BUSY` so the
+ground is not left waiting.
+
+```python
+def DO_cmdOverflowHook(self, opCode, cmdSeq):
+    self.cmdResponse_out(opCode, cmdSeq, fprime_py.Fw.CmdResponse(fprime_py.Fw.CmdResponse.T.BUSY))
+```
 
 ## Setting a Deployment Up With Python Bindings
 
