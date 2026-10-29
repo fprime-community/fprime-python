@@ -20,9 +20,10 @@ from .topology_instance_generator import TopologyBindingGenerator
 from .types_generator import (
     ArrayBindingGenerator,
     EnumBindingGenerator,
+    StateMachineBindingGenerator,
     StructBindingGenerator,
 )
-from .view import ComponentView, TopologyView, is_annotated
+from .view import ComponentView, StateMachineView, TopologyView, is_annotated
 
 
 class AnnotatedDefinitionVisitor(fpp.AstVisitor):
@@ -34,7 +35,8 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
     project to implementing it in Python.
 
     Definitions nested inside a component are not visited: they belong to the component's own namespace in
-    C++ and are not reachable as module-level Python types.
+    C++ and are not reachable as module-level Python types. The exception is an internal state machine,
+    which F Prime generates into the module's namespace; it is bound with its annotated component.
     """
 
     def __init__(
@@ -99,13 +101,19 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
         )
 
     def visit_DefStateMachine(self, node: fpp.ast.DefStateMachine) -> None:
-        """ Skip a state machine definition without descending into it
+        """ Bind an internal state machine's states and signals, without descending into it
+
+        Like a type, the machine is bound by the module defining it, so that it is bound once however many
+        components instantiate it. An external machine has no states or signals in the model to bind.
 
         fpp's analysis synthesizes a `State` enumeration inside every state machine. F Prime generates that
         enumeration under a flattened name of its own -- `<Machine>_StateEnumAc.hpp` rather than
-        `StateEnumAc.hpp` -- and it is not a module-level type a Python implementation names, so descending
-        would bind a type that does not exist under a file name that collides between state machines.
+        `StateEnumAc.hpp` -- so descending would bind a type that does not exist under a file name that
+        collides between state machines; the state machine binding binds it under F Prime's name instead.
         """
+        machine = StateMachineView(self.analysis, self.symbol_of(node))
+        if machine.is_internal:
+            self.emit(StateMachineBindingGenerator(self.include_manager, machine).files())
 
     def visit_DefModuleTemplate(self, node: fpp.ast.DefModuleTemplate) -> None:
         """ Skip a module template definition without descending into it
@@ -132,6 +140,9 @@ class AnnotatedDefinitionVisitor(fpp.AstVisitor):
         self.emit(
             ComponentImplementationGenerator(self.include_manager, self.analysis, symbol, component).files()
         )
+        # A state machine defined inside the component is not reached by visiting the module
+        for machine in view.nested_state_machines:
+            self.emit(StateMachineBindingGenerator(self.include_manager, machine).files())
 
     def visit_DefTopology(self, node: fpp.ast.DefTopology) -> None:
         """ Generate topology bindings when an annotated topology node is visited

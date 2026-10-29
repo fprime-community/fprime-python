@@ -192,6 +192,11 @@ class BindingGenerator(ABC):
         self.bind(function.body)
         return doc
 
+    @property
+    def scope(self) -> str:
+        """ The FPP-qualified name of the scope whose Python submodule the definition is bound into """
+        return scope_of(self.fpp_name)
+
     def invocation(self) -> Dict[str, str]:
         """ The call the module initialization has to make to bind this definition
 
@@ -199,7 +204,7 @@ class BindingGenerator(ABC):
             A mapping of the FPP scope the definition lives in to the statement invoking its
             initialization function against that scope's pybind11 submodule
         """
-        scope = scope_of(self.fpp_name)
+        scope = self.scope
         submodule_variable = f"{MODULE_VARIABLE_PREFIX}{flat_name(scope)}"
         return {scope: f"(void) {self.init_function_name}({submodule_variable});"}
 
