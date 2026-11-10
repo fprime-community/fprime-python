@@ -37,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "mypy>=1.11",
+    "cookiecutter>=2.1.1",
     "pytest>=8",
 ]
 

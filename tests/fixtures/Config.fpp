@@ -7,15 +7,18 @@ type FwSizeType = U64
 type FwEventIdType = U32
 type FwChanIdType = U32
 type FwOpcodeType = U32
+type FwPrmIdType = U32
 
-@ Stand-ins for the framework ports that commands, events and telemetry need
+@ Stand-ins for the framework ports that commands, events, telemetry and parameters need
 module Fw {
   type Time
   type LogBuffer
   type TlmBuffer
   type CmdArgBuffer
+  type ParamBuffer
   enum CmdResponse { OK }
   enum LogSeverity { ACTIVITY_LO }
+  enum ParamValid { VALID }
   port Log($id: FwEventIdType, ref timeTag: Fw.Time, $severity: LogSeverity, ref args: LogBuffer)
   port LogText($id: FwEventIdType, ref timeTag: Fw.Time, $severity: LogSeverity, ref $text: string size 256)
   port Time(ref $time: Fw.Time)
@@ -23,4 +26,6 @@ module Fw {
   port CmdReg(opCode: FwOpcodeType)
   port CmdResponse(opCode: FwOpcodeType, cmdSeq: U32, response: CmdResponse)
   port Tlm($id: FwChanIdType, ref timeTag: Fw.Time, ref val: TlmBuffer)
+  port PrmGet($id: FwPrmIdType, ref val: ParamBuffer) -> ParamValid
+  port PrmSet($id: FwPrmIdType, ref val: ParamBuffer)
 }

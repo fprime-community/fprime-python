@@ -53,37 +53,75 @@ endfunction(fprime_python_add_module_target)
 
 # Function `fprime_python_add_deployment_target`:
 #
-# Generates the pybind11 module for the specified deployment target. This will create a shared library that can be
-# imported into Python containing the F´ deployment.
+# Generates the pybind11 module for a Python deployment: one whose topology is annotated `@ fprime-python`. This
+# creates a shared library, importable from Python as `fprime_py`, containing the F´ deployment. Deployments
+# that run from C++ are left alone, so they may be built alongside a Python deployment in any order.
 #
 ####
 function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES FULL_DEPENDENCIES)
     fprime_python_add_module_target("${MODULE}" "${TARGET}" "${SOURCES}" "${DEPENDENCIES}")
-    # Only a single fprime_py module may exist per build: skip additional
-    # deployments (e.g. other cFS apps within the same cFS mission build)
+    # A deployment without a bound topology runs from C++: it has nothing for Python to import
+    _fprime_python_get_bound_topologies("${MODULE}" "${FULL_DEPENDENCIES}")
+    if (NOT FPRIME_PYTHON_BOUND_TOPOLOGIES)
+        message(STATUS "[fprime_python] Skipping deployment '${MODULE}': no '@ fprime-python' topology")
+        return()
+    endif()
+    # Every Python deployment would install its fprime_py and Python files to the same place
     if (TARGET "fprime_py")
-        message(STATUS "[fprime_python] Skipping deployment '${MODULE}': fprime_py already exists")
+        get_target_property(FIRST_DEPLOYMENT "fprime_py" FPRIME_PYTHON_DEPLOYMENT)
+        message(WARNING "[fprime_python] Skipping Python deployment '${MODULE}': fprime_py is already built for "
+            "'${FIRST_DEPLOYMENT}' and a build supports one Python deployment.")
         return()
     endif()
     message(STATUS "[fprime_python] Deployment '${MODULE}' dependencies: ${FULL_DEPENDENCIES}")
+    # The deployment executable links the bindings of its modules, so it needs the Python library
+    target_link_libraries("${MODULE}" PRIVATE pybind11::embed)
 
-    # Generate the Python module initialization file and add it to a pybind11 module called "fprime_python". This sets
+    # Generate the Python module initialization file and add it to a pybind11 module called "fprime_py". This sets
     # forth the top level module that users will import to access the deployment.
     _fprime_python_generate_init_file("${MODULE}" "${FULL_DEPENDENCIES}")
     pybind11_add_module("fprime_py" "${FPRIME_PYTHON_DEPLOYMENT_INIT_FILE}")
+    set_target_properties("fprime_py" PROPERTIES FPRIME_PYTHON_DEPLOYMENT "${MODULE}")
 
     # Link in all deployment modules and dependencies
     list(REMOVE_ITEM FULL_DEPENDENCIES "${MODULE}")
     target_link_libraries("fprime_py" PUBLIC
         ${FPRIME_PYTHON_DEPLOYMENT_MODULES} ${FULL_DEPENDENCIES} Fw_Types FprimePython)
-    
-    # Install the fprime_python target and any associated python files with a post-build install command
+
+    # Install on every build, not after the link of fprime_py: editing a Python file does not relink it
     _fprime_python_install_helper("${FULL_DEPENDENCIES}")
-    add_custom_command(TARGET "fprime_py" POST_BUILD COMMAND "${CMAKE_COMMAND}"
+    add_custom_target("fprime_py_install" ALL
+        COMMAND "${CMAKE_COMMAND}"
             -DCMAKE_INSTALL_COMPONENT=fprime-python
             -DFPRIME_INSTALL_DEST=${FPRIME_INSTALL_DEST}
             -DFPRIME_BUILD_DIR=${CMAKE_BINARY_DIR}
-            -P ${FPRIME_FRAMEWORK_PATH}/cmake/target/fprime_install.cmake)
+            -P ${FPRIME_FRAMEWORK_PATH}/cmake/target/fprime_install.cmake
+        COMMENT "Installing fprime_py and Python files"
+        VERBATIM)
+    add_dependencies("fprime_py_install" "fprime_py")
+    # Building only the deployment, as `fprime-util build` does from its directory, installs as well
+    add_dependencies("${MODULE}" "fprime_py_install")
+endfunction()
+
+####
+# Function `_fprime_python_get_bound_topologies`:
+#
+# Finds the topologies bound to Python among a deployment and its dependencies. The autocoder records each as a
+# property of the module that defines it.
+#
+# Sets FPRIME_PYTHON_BOUND_TOPOLOGIES in the caller's scope, empty when the deployment runs from C++.
+####
+function(_fprime_python_get_bound_topologies MODULE FULL_DEPENDENCIES)
+    set(BOUND_TOPOLOGIES)
+    foreach(DEPENDENCY IN LISTS FULL_DEPENDENCIES MODULE)
+        if (TARGET "${DEPENDENCY}")
+            get_target_property(TOPOLOGY_FILES "${DEPENDENCY}" FPRIME_PYTHON_BOUND_TOPOLOGY_FILES)
+            if (TOPOLOGY_FILES)
+                list(APPEND BOUND_TOPOLOGIES ${TOPOLOGY_FILES})
+            endif()
+        endif()
+    endforeach()
+    set(FPRIME_PYTHON_BOUND_TOPOLOGIES "${BOUND_TOPOLOGIES}" PARENT_SCOPE)
 endfunction()
 
 ####

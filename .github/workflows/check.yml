@@ -50,5 +50,5 @@ jobs:
       - name: Run mypy
         run: python -m mypy
 
-      - name: Run generator tests
+      - name: Run tests
         run: python -m pytest tests
