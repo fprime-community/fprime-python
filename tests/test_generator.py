@@ -12,6 +12,7 @@ from fprime_python.autocode.model import load_model
 from fprime_python.autocode.visitor import AnnotatedDefinitionVisitor
 
 FIXTURES = Path(__file__).parent / "fixtures"
+COMPONENT_COOKIECUTTER = Path(__file__).parent.parent / "cookiecutters" / "component"
 
 
 def generate(fixture: str, output: Path) -> Dict[str, str]:
@@ -63,6 +64,38 @@ def test_topologies_needing_no_annotation_are_accepted(files: Dict[str, str]) ->
     assert "PlainBindingAc.cpp" not in files
     assert "SubBindingAc.cpp" not in files
     assert "AnnotatedBindingAc.cpp" in files
+
+
+def test_only_a_bound_topology_marks_its_deployment(files: Dict[str, str]) -> None:
+    # The build system builds the Python module for a deployment when, and only when, this file is generated
+    assert [name for name in files if name.endswith(".topology.json")] == ["AnnotatedBinding.topology.json"]
+
+
+@pytest.mark.parametrize("kind", ["active", "passive", "queued"])
+def test_component_cookiecutter_is_bound(kind: str, tmp_path: Path) -> None:
+    cookiecutter = pytest.importorskip("cookiecutter.main").cookiecutter
+    # The name check in the template's hook needs fprime-tools, which the autocoder does not
+    component = Path(
+        cookiecutter(
+            str(COMPONENT_COOKIECUTTER),
+            no_input=True,
+            accept_hooks=False,
+            output_dir=str(tmp_path),
+            extra_context={"component_name": "Stamped", "component_kind": kind},
+        )
+    )
+    model = load_model([component / "Stamped.fpp"], [FIXTURES / "Config.fpp"])
+    visitor = AnnotatedDefinitionVisitor(tmp_path, model.analysis, IncludeManager([tmp_path]))
+    files = {path.name: contents for path, contents in visitor.generate(model).items()}
+    # Every handler the model asks for is implemented, under the name the generated base class calls
+    stubs = [line for line in files["Stamped.template.py"].splitlines() if line.startswith("    def ")]
+    implementation = (component / "Stamped.py").read_text(encoding="utf-8")
+    assert stubs
+    for stub in stubs:
+        assert stub in implementation
+    assert "self.log_ACTIVITY_HI_Hello(greeting)" in implementation
+    assert '"log_ACTIVITY_HI_Hello"' in files["StampedBindingAc.cpp"]
+    assert '"tlmWrite_HelloCount"' in files["StampedBindingAc.cpp"]
 
 
 def test_unannotated_deployment_of_python_components_is_rejected(

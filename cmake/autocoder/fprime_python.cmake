@@ -86,11 +86,15 @@ function(fprime_python_setup_autocode MODULE_NAME AC_INPUT_FILES)
         list(FILTER GENERATED_HPP_FILES INCLUDE REGEX "^.*\\.hpp$")
         list(FILTER GENERATED_JSON_FILES INCLUDE REGEX "^.*\\.json$")
         list(FILTER GENERATED_PY_FILES INCLUDE REGEX "^.*\\.py$")
+        # A bound topology leaves a snippet of its own kind, marking the deployments that run from Python
+        set(GENERATED_TOPOLOGY_FILES "${GENERATED_JSON_FILES}")
+        list(FILTER GENERATED_TOPOLOGY_FILES INCLUDE REGEX "^.*\\.topology\\.json$")
 
         # Append to target properties for tracking
         append_list_property("${GENERATED_HPP_FILES}" TARGET "${MODULE_NAME}" PROPERTY FPRIME_PYTHON_GENERATED_HPP_FILES)
         append_list_property("${GENERATED_JSON_FILES}" TARGET "${MODULE_NAME}" PROPERTY FPRIME_PYTHON_GENERATED_JSON_FILES)
         append_list_property("${GENERATED_PY_FILES}" TARGET "${MODULE_NAME}" PROPERTY FPRIME_PYTHON_GENERATED_PY_FILES)
+        append_list_property("${GENERATED_TOPOLOGY_FILES}" TARGET "${MODULE_NAME}" PROPERTY FPRIME_PYTHON_BOUND_TOPOLOGY_FILES)
 
         # Regenerate when anything in the model changes, not just this module's own translation units: a
         # bound component's ports, commands and types may all be defined elsewhere.

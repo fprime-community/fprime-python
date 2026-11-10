@@ -45,10 +45,20 @@ autocoder and its dependencies by running `pip install .` in the `fprime-python`
 or newer. The autocoder reads the FPP model directly, so `FPRIME_ENABLE_JSON_MODEL_GENERATION` and
 `fprime-python-model` are no longer needed.
 
-Next, add the path to the download in the `library_locations` list set in settings.ini for a deployment. 
+Next, add the path to the download in the `library_locations` list set in the project's `settings.ini`.
 
 ```ini
 library_locations: ./lib/fprime-python
+```
+
+Then include `FprimePython` from the project's top-level `CMakeLists.txt`, after `FPrime.cmake` and before
+`fprime_setup_included_code()`. It locates the pip-installed pybind11, compiles the project as position
+independent code, and registers the `fprime_python` build target that generates and builds the bindings.
+
+```cmake
+include("${CMAKE_CURRENT_LIST_DIR}/lib/fprime/cmake/FPrime.cmake")
+include(FprimePython)
+fprime_setup_included_code()
 ```
 
 When running the code, the same version of Python must be used as the python used to build it.
@@ -68,6 +78,28 @@ active component ActivePythonExample {
 Once finished, the python bindings will be autocoded and included in the next build (assuming the deployment is setup 
 as shown below). This will also produce a `<component>.template.py` file in the component folder as a basic template for
 implementing components in python.
+
+> [!CAUTION]
+> The `<component>.template.py` is updated on every build unlike F Prime implementation templates.
+
+To include the component in the built python package, add the final Python file to the `SOURCES` list. A component
+implemented in Python has no `.cpp` or `.hpp` implementation files.
+
+```cmake
+register_fprime_module(
+    AUTOCODER_INPUTS
+        "${CMAKE_CURRENT_LIST_DIR}/MyComponent.fpp" # Has annotated component
+    SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/MyComponent.py" # Has Python implementation
+)
+```
+
+A new component with all of the above in place can be stamped out with the cookiecutter in this repository. Run it
+from the directory that should hold the component:
+
+```bash
+fprime-util new --from-source <path to fprime-python>/cookiecutters/component
+```
 
 Every port, command, event, telemetry channel, parameter and internal port of the component is bound, as is the
 overflow hook of each member with `hook` queue-full behavior (see below). Three component features cannot be bound
@@ -133,29 +165,67 @@ deployment topology MyDeployment {
 An annotated topology must be a `deployment topology`: the binding calls the topology's setup and teardown, and
 F Prime only generates those for a deployment.
 
-> [!CAUTION]
-> The `<component>.template.py` is updated on every build unlike F Prime implementation templates.
+The build produces one Python extension module, `fprime_py`, for the annotated deployment, and installs it with
+the Python files of every module the deployment uses into `build-artifacts/python`. Python files are reinstalled
+by every build, so an edit to one takes effect without rebuilding any C++.
 
-To include the component in the built python package, add the final Python file to the `SOURCES` list.
+Deployments whose topology is not annotated run from C++ as usual. Any number of them may be built in the same
+project as a Python deployment, in any order. A build supports one Python deployment: a second annotated deployment
+is skipped with a warning, because both would install to `build-artifacts/python`.
 
-```cmake
-register_fprime_module(
-    AUTOCODER_INPUTS
-        "${CMAKE_CURRENT_LIST_DIR}/MyComponent.fpp" # Has annotated component
-    SOURCES
-        "${CMAKE_CURRENT_LIST_DIR}/MyComponent.py" # Has Python implementation
-)
+### Custom Bindings
+
+`fprime_py` binds what the FPP model defines. A deployment's hand-written types are not in the model, so the
+project binds them itself by defining `setup_user_deployment`, declared in `FprimePython/FprimePython.hpp`. Every
+Python deployment must define it, and at least bind the `TopologyState` type passed to `setup` and `teardown`:
+
+```c++
+#include "FprimePython/FprimePython.hpp"
+#include "MyDeployment/Top/MyDeploymentTopologyDefs.hpp"
+
+void setup_user_deployment(pybind11::module_& m) {
+    pybind11::class_<MyDeployment::TopologyState>(m, "TopologyState")
+        .def(pybind11::init<>())
+        .def_readwrite("hostname", &MyDeployment::TopologyState::hostname)
+        .def_readwrite("port", &MyDeployment::TopologyState::port);
+}
 ```
+
+Add the file to the `SOURCES` of the module that defines the topology. A member bound with `def_readwrite` must own
+its value: declare a string member as `std::string`. A `const char*` member is left pointing into a Python string
+that is freed once the assignment returns.
+
+### Running a Deployment
+
+The deployment's entry point is a Python file named `fsw_main.py` defining a function `fsw_main()`, listed in the
+`SOURCES` of the deployment so that it is installed with the rest. It constructs the `TopologyState`, calls
+`fprime_py.Os.init()` and the bound `setup`, runs until told to stop, and calls `teardown`. Run it with the Python
+that built the project, either directly or through the runner, which finds `build-artifacts/python` from the
+working directory or any directory above it:
+
+```bash
+python3 build-artifacts/python/fsw_main.py
+fprime-python-runner
+```
+
+Python instances are reached as attributes of the bound topology's `Instances`, e.g.
+`fprime_py.MyDeployment.Instances.myComponent`. Only instances of `@ fprime-python` components are listed.
+`FprimePython.PythonRateGroupDriver` is one such component: instantiate it in place of a C++ timer to drive the
+rate groups from `fsw_main()` with its blocking `driveRateGroup` call.
+
+A complete walk-through is in the F´ how-to
+[Develop Python Components](https://fprime.jpl.nasa.gov/latest/docs/how-to/develop/python-development/), and a
+working project in [fprime-python-reference](https://github.com/fprime-community/fprime-python-reference).
 
 ## F Prime Data Types
 
-Modeled types are available to Python. These types are under the namespace module `fprime_python` and then under their
-respective F Prime namespaces. For example, `import fprime_python.Fw.Time.Time` will import the `Fw::Time` type that
-lives under `#include "Fw/Time/Time.hpp`.
+Modeled types are available to Python. These types are under the module `fprime_py` and then under their
+respective F Prime namespaces. For example, `fprime_py.Fw.Time` is the `Fw::Time` type that lives under
+`#include "Fw/Time/Time.hpp"`.
 
 ```python
-from fprime_python.Fw.Time import Time
-fw_time_object = Time()
+import fprime_py
+fw_time_object = fprime_py.Fw.Time()
 ```
 
 Struct members are available as properties and as the autocoded `get_<member>()`/`set_<member>()` functions. Members
@@ -205,7 +275,3 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m mypy
 .venv/bin/python -m pytest tests
 ```
-
-## TODO: custom bindings
-
-## TODO: Deployments

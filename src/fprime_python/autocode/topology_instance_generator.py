@@ -95,6 +95,11 @@ class TopologyBindingGenerator(BindingGenerator):
     Python, and exposes the topology's own setup and teardown.
     """
 
+    #: A bound topology is what makes a deployment a Python deployment. The build system has to know that
+    #: when it configures, before any snippet exists to be read, so it is told by the snippet's file name.
+    #: The extra extension cannot collide with another definition's snippet: FPP names hold no dots.
+    INVOCATION_SUFFIX = "Binding.topology"
+
     def __init__(
         self, include_manager: IncludeManager, symbol: fpp.Symbol.Variant, topology: fpp.Topology
     ) -> None:
