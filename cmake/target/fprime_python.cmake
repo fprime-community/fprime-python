@@ -99,6 +99,8 @@ function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES 
         COMMENT "Installing fprime_py and Python files"
         VERBATIM)
     add_dependencies("fprime_py_install" "fprime_py")
+    # Building only the deployment, as `fprime-util build` does from its directory, installs as well
+    add_dependencies("${MODULE}" "fprime_py_install")
 endfunction()
 
 ####

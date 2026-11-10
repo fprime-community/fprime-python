@@ -37,8 +37,10 @@ class Project:
         )
         return " ".join((result.stdout + result.stderr).split())
 
-    def build(self) -> None:
-        subprocess.run(["cmake", "--build", str(self.build_dir)], capture_output=True, text=True, check=True)
+    def build(self, target: str = "all") -> None:
+        subprocess.run(
+            ["cmake", "--build", str(self.build_dir), "--target", target], capture_output=True, text=True, check=True
+        )
 
 
 @pytest.fixture
@@ -71,6 +73,13 @@ def test_second_python_deployment_is_skipped_with_a_warning(project: Project) ->
     assert "RESULT fprime_py built for Py" in output
     assert "Skipping Python deployment 'Py2': fprime_py is already built for 'Py'" in output
     assert "RESULT Py2 links LINKED-NOTFOUND" in output
+
+
+def test_building_only_the_deployment_installs(project: Project) -> None:
+    project.configure(["Cpp", "Py"])
+    project.build("Py")
+    assert (project.installed / "Component.py").read_text() == "VERSION = 1\n"
+    assert list(project.installed.glob("*fprime_py*"))
 
 
 def test_python_edit_is_installed_without_relinking(project: Project) -> None:
