@@ -167,7 +167,8 @@ F Prime only generates those for a deployment.
 
 The build produces one Python extension module, `fprime_py`, for the annotated deployment, and installs it with
 the Python files of every module the deployment uses into `build-artifacts/python`. Python files are reinstalled
-by every build, so an edit to one takes effect without rebuilding any C++.
+by every build of the project or of the deployment, so an edit to one takes effect without rebuilding any C++.
+Building a single component's directory installs nothing.
 
 The executable of an annotated deployment is linked against `pybind11::embed` by the build, because the components
 it links call into Python. That executable is not what runs the deployment (see
