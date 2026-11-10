@@ -221,7 +221,7 @@ A deployment may list `FprimePython_PythonConsole` under `CHOOSES_IMPLEMENTATION
 through Python's `print`.
 
 A complete walk-through is in the F´ how-to
-[Develop Python Components](https://fprime.jpl.nasa.gov/latest/docs/how-to/develop/python-development/), and a
+[Develop Components in Python](https://fprime.jpl.nasa.gov/latest/docs/how-to/develop/python-development/), and a
 working project in [fprime-python-reference](https://github.com/fprime-community/fprime-python-reference).
 
 ## F Prime Data Types
