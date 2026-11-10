@@ -22,13 +22,14 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(PYBIND11_FINDPYTHON ON)
 
 # pybind11 is installed with the fprime-python package, so the interpreter knows where its CMake package is
-execute_process(COMMAND python3 -m pybind11 --cmakedir
+find_program(PYTHON NAMES python3 python)
+execute_process(COMMAND "${PYTHON}" -m pybind11 --cmakedir
     OUTPUT_VARIABLE FPRIME_PYTHON_PYBIND11_CMAKEDIR
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE FPRIME_PYTHON_PYBIND11_RESULT
     ERROR_QUIET)
 if (NOT FPRIME_PYTHON_PYBIND11_RESULT EQUAL 0)
-    message(FATAL_ERROR "[fprime_python] 'python3 -m pybind11 --cmakedir' failed. Install fprime-python into the "
+    message(FATAL_ERROR "[fprime_python] '${PYTHON} -m pybind11 --cmakedir' failed. Install fprime-python into the "
         "Python environment used to build, e.g. 'pip install ./lib/fprime-python'.")
 endif()
 find_package(pybind11 CONFIG REQUIRED PATHS "${FPRIME_PYTHON_PYBIND11_CMAKEDIR}")
