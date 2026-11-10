@@ -60,15 +60,13 @@ endfunction(fprime_python_add_module_target)
 ####
 function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES FULL_DEPENDENCIES)
     fprime_python_add_module_target("${MODULE}" "${TARGET}" "${SOURCES}" "${DEPENDENCIES}")
-    # A deployment without a bound topology has no setup or teardown for Python to call and defines no
-    # `setup_user_deployment`, so a module built for it could not be imported
+    # A deployment without a bound topology runs from C++: it has nothing for Python to import
     _fprime_python_get_bound_topologies("${MODULE}" "${FULL_DEPENDENCIES}")
     if (NOT FPRIME_PYTHON_BOUND_TOPOLOGIES)
         message(STATUS "[fprime_python] Skipping deployment '${MODULE}': no '@ fprime-python' topology")
         return()
     endif()
-    # Only a single fprime_py module may exist per build, as every Python deployment would install its module
-    # and Python files to the same place
+    # Every Python deployment would install its fprime_py and Python files to the same place
     if (TARGET "fprime_py")
         get_target_property(FIRST_DEPLOYMENT "fprime_py" FPRIME_PYTHON_DEPLOYMENT)
         message(WARNING "[fprime_python] Skipping Python deployment '${MODULE}': fprime_py is already built for "
@@ -76,6 +74,8 @@ function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES 
         return()
     endif()
     message(STATUS "[fprime_python] Deployment '${MODULE}' dependencies: ${FULL_DEPENDENCIES}")
+    # The deployment executable links the bindings of its modules, so it needs the Python library
+    target_link_libraries("${MODULE}" PRIVATE pybind11::embed)
 
     # Generate the Python module initialization file and add it to a pybind11 module called "fprime_py". This sets
     # forth the top level module that users will import to access the deployment.
@@ -88,9 +88,7 @@ function(fprime_python_add_deployment_target MODULE TARGET SOURCES DEPENDENCIES 
     target_link_libraries("fprime_py" PUBLIC
         ${FPRIME_PYTHON_DEPLOYMENT_MODULES} ${FULL_DEPENDENCIES} Fw_Types FprimePython)
 
-    # Install the fprime_py module and any associated python files on every build. Editing a Python file does
-    # not relink fprime_py, so an install that ran after its link would leave the old Python file installed.
-    # The install itself only copies what changed.
+    # Install on every build, not after the link of fprime_py: editing a Python file does not relink it
     _fprime_python_install_helper("${FULL_DEPENDENCIES}")
     add_custom_target("fprime_py_install" ALL
         COMMAND "${CMAKE_COMMAND}"

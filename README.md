@@ -169,6 +169,10 @@ The build produces one Python extension module, `fprime_py`, for the annotated d
 the Python files of every module the deployment uses into `build-artifacts/python`. Python files are reinstalled
 by every build, so an edit to one takes effect without rebuilding any C++.
 
+The executable of an annotated deployment is linked against `pybind11::embed` by the build, because the components
+it links call into Python. That executable is not what runs the deployment (see
+[Running a Deployment](#running-a-deployment)), so its `Main.cpp` may be an empty `main`.
+
 Deployments whose topology is not annotated run from C++ as usual. Any number of them may be built in the same
 project as a Python deployment, in any order. A build supports one Python deployment: a second annotated deployment
 is skipped with a warning, because both would install to `build-artifacts/python`.
@@ -212,6 +216,9 @@ Python instances are reached as attributes of the bound topology's `Instances`, 
 `fprime_py.MyDeployment.Instances.myComponent`. Only instances of `@ fprime-python` components are listed.
 `FprimePython.PythonRateGroupDriver` is one such component: instantiate it in place of a C++ timer to drive the
 rate groups from `fsw_main()` with its blocking `driveRateGroup` call.
+
+A deployment may list `FprimePython_PythonConsole` under `CHOOSES_IMPLEMENTATIONS` to send F Prime console output
+through Python's `print`.
 
 A complete walk-through is in the F´ how-to
 [Develop Python Components](https://fprime.jpl.nasa.gov/latest/docs/how-to/develop/python-development/), and a
