@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import List
 
@@ -10,6 +11,7 @@ import pytest
 
 CMAKE_DIR = Path(__file__).parent.parent / "cmake"
 PROJECT = Path(__file__).parent / "cmake"
+HOOK_PROJECT = Path(__file__).parent / "cmake_hook"
 
 pytestmark = pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake is not installed")
 
@@ -90,3 +92,33 @@ def test_template_is_copied_to_the_source_directory_but_not_installed(project: P
     project.build()
     assert (project.source / "Component.template.py").read_text() == "# template\n"
     assert not (project.installed / "Component.template.py").exists()
+
+
+def configure_hook(tmp_path: Path, python: str, *options: str) -> subprocess.CompletedProcess:
+    """ Configure a project that includes FprimePython.cmake, finding pybind11 with the interpreter given """
+    return subprocess.run(
+        ["cmake", "-S", str(HOOK_PROJECT), "-B", str(tmp_path / "build"), f"-DFPRIME_PYTHON_CMAKE_DIR={CMAKE_DIR}",
+         f"-DPYTHON={python}", *options],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def test_hook_registers_the_target_and_position_independent_code(tmp_path: Path) -> None:
+    pytest.importorskip("pybind11")
+    result = configure_hook(tmp_path, sys.executable)
+    assert result.returncode == 0, result.stderr
+    assert "RESULT registered target/fprime_python" in result.stdout
+    assert "RESULT position independent ON" in result.stdout
+
+
+def test_hook_names_the_fix_when_pybind11_is_not_installed(tmp_path: Path) -> None:
+    # An "interpreter" that fails as one without pybind11 does
+    result = configure_hook(tmp_path, shutil.which("false") or "false")
+    assert result.returncode != 0
+    assert "Install fprime-python into the Python environment used to build" in " ".join(result.stderr.split())
+
+
+def test_hook_does_nothing_in_a_sub_build(tmp_path: Path) -> None:
+    result = configure_hook(tmp_path, shutil.which("false") or "false", "-DFPRIME_SUB_BUILD_TARGETS=target/sub")
+    assert result.returncode == 0, result.stderr
+    assert "RESULT registered" not in result.stdout
