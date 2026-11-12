@@ -13,6 +13,8 @@ from fprime_cpp_codegen import Body
 from .binding_generator import BindingGenerator, expression_chain
 from .cpp_types import StringClass, struct_member_getter, type_name
 from .include import IncludeManager
+from .names import flat_name
+from .view import StateMachineView
 
 
 class ArrayBindingGenerator(BindingGenerator):
@@ -159,31 +161,136 @@ class EnumBindingGenerator(BindingGenerator):
 
     def bind(self, body: Body) -> None:
         """ Write the pybind11 statements binding this enumeration """
-        fqn = self.cpp_fqn
-        # The C++ name comes from the model, so this is not margin-stripped
-        body.lines(
-            f'pybind11::class_<{fqn}> enumeration(m, "{self.name}");\n'
-            f'enumeration.def_readwrite("e", &{fqn}::e);',
-            margin=None,
-        )
-        body.blank()
-        # `native_enum` has to be finalized before anything else touches the enclosing scope, so the
-        # value chain is emitted as one statement of its own.
-        constants = [constant.name for constant in self.enum_type.node.constants]
-        body.raw(
-            expression_chain(
-                f'pybind11::native_enum<{fqn}::T>(enumeration, "T", "enum.Enum")',
-                [f'.value("{constant}", {fqn}::{constant})' for constant in constants]
-                + [".export_values()", ".finalize()"],
-            )
-        )
-        body.blank()
-        # Constructing the wrapper from one of its own values is the natural Python spelling, and can
-        # only be bound once T exists.
-        body.lines(f"enumeration.def(pybind11::init<{fqn}::T>());", margin=None)
+        write_enum_wrapper(body, self.cpp_fqn, self.name, [constant.name for constant in self.enum_type.node.constants])
 
     def cpp_system_includes(self) -> List[str]:
         """ Get any system includes required by this type generator """
+        return ["pybind11/native_enum.h"]
+
+
+def write_enum_wrapper(body: Body, fqn: str, python_name: str, constants: List[str]) -> None:
+    """ Write the pybind11 statements binding one F Prime enumeration class and its nested `T`
+
+    Args:
+        body: The body of the initialization function to write the statements into
+        fqn: The C++-qualified name of the enumeration class
+        python_name: The name the class is bound into the module `m` under
+        constants: The names of the enumeration's constants
+    """
+    # The C++ name comes from the model, so this is not margin-stripped
+    body.lines(
+        f'pybind11::class_<{fqn}> enumeration(m, "{python_name}");\n'
+        f'enumeration.def_readwrite("e", &{fqn}::e);',
+        margin=None,
+    )
+    body.blank()
+    # `native_enum` has to be finalized before anything else touches the enclosing scope, so the
+    # value chain is emitted as one statement of its own.
+    body.raw(
+        expression_chain(
+            f'pybind11::native_enum<{fqn}::T>(enumeration, "T", "enum.Enum")',
+            [f'.value("{constant}", {fqn}::{constant})' for constant in constants]
+            + [".export_values()", ".finalize()"],
+        )
+    )
+    body.blank()
+    # Constructing the wrapper from one of its own values is the natural Python spelling, and can
+    # only be bound once T exists.
+    body.lines(f"enumeration.def(pybind11::init<{fqn}::T>());", margin=None)
+
+
+class StateMachineBindingGenerator(BindingGenerator):
+    """ Generator for the bindings of an internal state machine's states and signals into Python
+
+    F Prime generates the states as an ordinary enumeration class, `<Machine>_State`, which is bound the way
+    any other enumeration is, and the signals as an `enum class Signal` nested in `<Machine>StateMachineBase`,
+    which is bound as a `pybind11::native_enum` named `<Machine>_Signal` beside it. A machine is bound once,
+    by the module defining it, however many components instantiate it: pybind11 refuses to register a type
+    twice.
+
+    Example Output:
+    ```cpp
+    pybind11::class_<Ref::Blinker_State> enumeration(m, "Blinker_State");
+    ...
+    pybind11::native_enum<Ref::BlinkerStateMachineBase::Signal>(m, "Blinker_Signal", "enum.Enum")
+        .value("__FPRIME_INITIAL_TRANSITION", Ref::BlinkerStateMachineBase::Signal::__FPRIME_INITIAL_TRANSITION)
+        .value("advance", Ref::BlinkerStateMachineBase::Signal::advance)
+        .finalize();
+    ```
+    """
+
+    FILE_BASE_SUFFIX = "StateMachineBindingAc"
+    INVOCATION_SUFFIX = "StateMachineBinding"
+
+    def __init__(self, include_manager: IncludeManager, machine: StateMachineView) -> None:
+        """ Initialize the generator for one internal state machine
+
+        Args:
+            include_manager: Resolves the include paths of the headers the binding needs
+            machine: The state machine being bound
+        """
+        super().__init__(include_manager, machine.symbol)
+        self.machine = machine
+
+    @property
+    def name(self) -> str:
+        """ The state machine's name within its module, which F Prime names its files after """
+        return self.machine.base_name
+
+    @property
+    def cpp_fqn(self) -> str:
+        """ The C++-qualified name of the state machine base class """
+        return self.machine.base_class
+
+    @property
+    def doc_name(self) -> str:
+        """ The bindings are of the machine's states and signals rather than of its base class """
+        return f"the states and signals of {self.machine.fpp_name}"
+
+    @property
+    def doc_subject(self) -> str:
+        """ The bindings are of the machine's states and signals rather than of its base class """
+        return f"the states and signals of the FPP state machine {self.machine.fpp_name}"
+
+    @property
+    def scope(self) -> str:
+        """ The module the state machine's C++ names live in, even when it is defined inside a component """
+        return self.machine.scope
+
+    @property
+    def init_function_name(self) -> str:
+        """ The initialization function's name, kept apart from that of a type or component of the same name """
+        return f"init_{flat_name(self.fpp_name)}_StateMachine"
+
+    @property
+    def include_guard(self) -> str:
+        """ The include guard of the generated header """
+        return f"FPRIME_PYTHON_{flat_name(self.fpp_name)}_STATE_MACHINE_HPP"
+
+    def cpp_includes(self) -> List[str]:
+        """ The generated header, and the state machine header F Prime generates, which includes its states """
+        return [
+            self.include_manager.get_sibling_path(self.symbol, f"{self.file_base}.hpp"),
+            self.include_manager.get_sibling_path(self.symbol, self.machine.header_name),
+        ]
+
+    def bind(self, body: Body) -> None:
+        """ Write the pybind11 statements binding the state machine's states and signals """
+        machine = self.machine
+        write_enum_wrapper(body, machine.state_type, machine.state_python_name, machine.state_constants)
+        body.blank()
+        # Bound straight into the module, so its values are not exported: they would land beside every other
+        # definition of the module, where the signals of two machines could collide
+        body.raw(
+            expression_chain(
+                f'pybind11::native_enum<{machine.signal_type}>(m, "{machine.signal_python_name}", "enum.Enum")',
+                [f'.value("{signal}", {machine.signal_type}::{signal})' for signal in machine.signal_constants]
+                + [".finalize()"],
+            )
+        )
+
+    def cpp_system_includes(self) -> List[str]:
+        """ Get any system includes required by this generator """
         return ["pybind11/native_enum.h"]
 
 

@@ -91,6 +91,23 @@ def value_type(type_: Optional[fpp.Type.Variant], string_class: StringClass) -> 
     return type_name(type_, string_class)
 
 
+def value_parameter_type(type_: fpp.Type.Variant, string_class: StringClass) -> str:
+    """ The C++ spelling of a type where it is passed in, not by `ref`: a primitive by value, else by `const` reference
+
+    Args:
+        type_: The FPP semantic type to spell
+        string_class: The string class to use should the type be a modeled string
+    Returns:
+        The C++ parameter type, e.g. "U32", "const Ref::PySimple&"
+    """
+    name = type_name(type_, string_class)
+    # An alias of a primitive is passed by value under the alias's own name, which is how F Prime's
+    # autocoder spells it. `is_primitive` does not look through aliases, so the aliased type is checked.
+    if type_.underlying_type.is_primitive:
+        return name
+    return f"const {name}&"
+
+
 def formal_parameter_type(param: fpp.ast.FormalParam, string_class: StringClass) -> str:
     """ The C++ spelling of a formal parameter, reference qualifiers included
 
@@ -105,11 +122,7 @@ def formal_parameter_type(param: fpp.ast.FormalParam, string_class: StringClass)
     name = type_name(type_, string_class)
     if param.kind == fpp.ast.FormalParamKind.Ref:
         return f"{name}&"
-    # An alias of a primitive is passed by value under the alias's own name, which is how F Prime's
-    # autocoder spells it. `is_primitive` does not look through aliases, so the aliased type is checked.
-    if type_.underlying_type.is_primitive:
-        return name
-    return f"const {name}&"
+    return value_parameter_type(type_, string_class)
 
 
 def struct_member_getter(type_: fpp.Type.Variant) -> Tuple[str, bool]:

@@ -36,6 +36,7 @@ class IncludeManager(object):
         fpp.Symbol.Constant: "Constant",
         fpp.Symbol.EnumType: "Enum",
         fpp.Symbol.Port: "Port",
+        fpp.Symbol.StateMachine: "StateMachine",
         fpp.Symbol.StructType: "Serializable",
         fpp.Symbol.Topology: "Topology",
     }
